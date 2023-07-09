@@ -1,7 +1,4 @@
-using System;
-using System.Threading.Tasks;
 using Confluent.Kafka;
-using Coflnet.Sky.Core;
 using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
