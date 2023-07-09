@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using OpenTelemetry.Context.Propagation;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Trace;
 using OpenTelemetry;
@@ -9,9 +8,8 @@ using System.Diagnostics;
 using OpenTelemetry.Resources;
 using System.Globalization;
 using System.Collections.Concurrent;
-using System;
 
-namespace Coflnet.Sky.Core;
+namespace Coflnet.Core.Tracing;
 public static class JaegerSercieExtention
 {
     public static void AddJaeger(this IServiceCollection services, IConfiguration config, double samplingRate = 0.03, double lowerBoundInSeconds = 60)

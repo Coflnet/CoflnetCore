@@ -15,10 +15,12 @@ namespace Coflnet.Kafka
     {
         static Counter processFail = Metrics.CreateCounter("consume_process_failed", "How often processing of consumed messages failed");
         private readonly ILogger<KafkaConsumer> _logger;
+        private readonly IConfiguration config;
 
-        public KafkaConsumer(ILogger<KafkaConsumer> logger)
+        public KafkaConsumer(ILogger<KafkaConsumer> logger, IConfiguration config)
         {
             _logger = logger;
+            this.config = config;
         }
 
 
@@ -34,16 +36,16 @@ namespace Coflnet.Kafka
         /// <param name="deserializer">The deserializer used for new messages</param>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public async Task Consume<T>(IConfiguration config, string topic, Func<T, Task> action,
+        public async Task Consume<T>(string topic, Func<T, Task> action,
                                             CancellationToken cancleToken,
                                             string groupId = "default",
                                             AutoOffsetReset start = AutoOffsetReset.Earliest,
-                                            IDeserializer<T> deserializer = null)
+                                            IDeserializer<T>? deserializer = null)
         {
             while (!cancleToken.IsCancellationRequested)
                 try
                 {
-                    await ConsumeBatch(config, topic, async batch =>
+                    await ConsumeBatch(topic, async batch =>
                     {
                         foreach (var message in batch)
                             await action(message);
@@ -70,14 +72,14 @@ namespace Coflnet.Kafka
         /// <param name="deserializer"></param>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public Task ConsumeBatch<T>(IConfiguration config, string topic, Func<IEnumerable<T>, Task> action,
+        public Task ConsumeBatch<T>(string topic, Func<IEnumerable<T>, Task> action,
                                             CancellationToken cancleToken,
                                             string groupId = "default",
                                             int maxChunkSize = 500,
                                             AutoOffsetReset start = AutoOffsetReset.Earliest,
-                                            IDeserializer<T> deserializer = null)
+                                            IDeserializer<T>? deserializer = null)
         {
-            return ConsumeBatch<T>(config, new string[] { topic }, action, cancleToken, groupId, maxChunkSize, start, deserializer);
+            return ConsumeBatch<T>(new string[] { topic }, action, cancleToken, groupId, maxChunkSize, start, deserializer);
         }
 
         /// <summary>
@@ -93,12 +95,12 @@ namespace Coflnet.Kafka
         /// <param name="deserializer"></param>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public async Task ConsumeBatch<T>(IConfiguration config, string[] topics, Func<IEnumerable<T>, Task> action,
-                                            CancellationToken cancleToken,
+        public async Task ConsumeBatch<T>(string[] topics, Func<IEnumerable<T>, Task> action,
+                                            CancellationToken cancleToken = default,
                                             string groupId = "default",
                                             int maxChunkSize = 500,
                                             AutoOffsetReset start = AutoOffsetReset.Earliest,
-                                            IDeserializer<T> deserializer = null)
+                                            IDeserializer<T>? deserializer = null)
         {
             await ConsumeBatch(new ConsumerConfig(KafkaCreator.GetClientConfig(config))
             {
@@ -120,7 +122,7 @@ namespace Coflnet.Kafka
                                                     Func<IEnumerable<T>, Task> action,
                                                     CancellationToken cancleToken,
                                                     int maxChunkSize = 500,
-                                                    IDeserializer<T> deserializer = null)
+                                                    IDeserializer<T>? deserializer = null)
         {
             await ConsumeBatch(config, new string[] { topic }, action, cancleToken, maxChunkSize, deserializer);
         }
@@ -131,7 +133,7 @@ namespace Coflnet.Kafka
                                                 Func<IEnumerable<T>, Task> action,
                                                 CancellationToken cancleToken,
                                                 int maxChunkSize = 500,
-                                                IDeserializer<T> deserializer = null)
+                                                IDeserializer<T>? deserializer = default)
         {
             var batch = new Queue<ConsumeResult<Ignore, T>>();
             var conf = new ConsumerConfig(config)
@@ -141,11 +143,12 @@ namespace Coflnet.Kafka
             // in case this method is awaited on in a backgroundWorker
             await Task.Yield();
 
-            if (deserializer == null)
-                deserializer = SerializerFactory.GetDeserializer<T>();
             var currentChunkSize = 1;
+            var builder = new ConsumerBuilder<Ignore, T>(conf);
+            if (deserializer != default)
+                builder = builder.SetValueDeserializer(deserializer);
 
-            using (var c = new ConsumerBuilder<Ignore, T>(conf).SetValueDeserializer(deserializer).Build())
+            using (var c = builder.Build())
             {
                 c.Subscribe(topics);
                 try
