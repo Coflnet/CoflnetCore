@@ -6,6 +6,7 @@ using OpenTelemetry.Trace;
 using OpenTelemetry;
 using System.Diagnostics;
 using OpenTelemetry.Resources;
+using Confluent.Kafka.Extensions.OpenTelemetry;
 using System.Globalization;
 using System.Collections.Concurrent;
 
@@ -19,6 +20,7 @@ public static class JaegerSercieExtention
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
             .AddSqlClientInstrumentation()
+            .AddConfluentKafkaInstrumentation()
             .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["JAEGER_SERVICE_NAME"] ?? "default"))
             .AddJaegerExporter(j =>
             {
