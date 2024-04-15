@@ -5,11 +5,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Version>0.1.1</Version>
+    <Version>0.2.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="CassandraCSharpDriver" Version="3.20.1" />
     <PackageReference Include="Confluent.Kafka.Extensions.OpenTelemetry" Version="0.3.0" />
     <PackageReference Include="Messagepack" Version="2.5.140" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />

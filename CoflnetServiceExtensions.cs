@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Prometheus;
 using Microsoft.Extensions.Logging;
 using Coflnet.Core.ErrorHandling;
+using Coflnet.Cassandra;
 
 namespace Coflnet.Core;
 
@@ -21,6 +22,7 @@ public static class CoflnetServiceExtensions
         var config = sp.GetRequiredService<IConfiguration>();
         services.AddJaeger(config);
         services.AddKafka();
+        services.AddCassandra();
     }
 
     /// <summary>
