@@ -53,6 +53,7 @@ public class ErrorHandler
                         new ("path", context.Request.Path),
                         new ("query", context.Request.QueryString) })));
             var traceId = System.Net.Dns.GetHostName().Replace(serviceName, "").Trim('-') + "." + activity.Context.TraceId;
+            context.Response.Headers.Add("X-Trace-Id", traceId);
             await context.Response.WriteAsync(
                 JsonSerializer.Serialize(new ErrorResponse
                 {
