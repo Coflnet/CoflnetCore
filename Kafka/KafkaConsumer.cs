@@ -24,14 +24,14 @@ public class KafkaConsumer
     /// </summary>
     /// <param name="config"></param>
     /// <param name="topic"></param>
-    /// <param name="action"></param>
+    /// <param name="handler"></param>
     /// <param name="cancleToken"></param>
     /// <param name="groupId"></param>
     /// <param name="start">What event to start at</param>
     /// <param name="deserializer">The deserializer used for new messages</param>
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
-    public async Task Consume<T>(string topic, Func<T, Task> action,
+    public async Task Consume<T>(string topic, Func<T, CancellationToken, Task> handler,
                                         CancellationToken cancleToken,
                                         string groupId = "default",
                                         AutoOffsetReset start = AutoOffsetReset.Earliest,
@@ -43,7 +43,7 @@ public class KafkaConsumer
                 await ConsumeBatch(topic, async batch =>
                 {
                     foreach (var message in batch)
-                        await action(message);
+                        await handler(message, cancleToken);
                 }, cancleToken, groupId, 1, start, deserializer);
             }
             catch (Exception e)
@@ -57,9 +57,8 @@ public class KafkaConsumer
     /// <summary>
     /// Consume a batch of messages for a single topic
     /// </summary>
-    /// <param name="config"></param>
     /// <param name="topic"></param>
-    /// <param name="action"></param>
+    /// <param name="handler">To be invoked</param>
     /// <param name="cancleToken"></param>
     /// <param name="groupId"></param>
     /// <param name="maxChunkSize"></param>
@@ -67,14 +66,35 @@ public class KafkaConsumer
     /// <param name="deserializer"></param>
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
-    public Task ConsumeBatch<T>(string topic, Func<IEnumerable<T>, Task> action,
+    public Task ConsumeBatch<T>(string topic, Func<IEnumerable<T>, CancellationToken, Task> handler,
                                         CancellationToken cancleToken,
                                         string groupId = "default",
                                         int maxChunkSize = 500,
                                         AutoOffsetReset start = AutoOffsetReset.Earliest,
                                         IDeserializer<T>? deserializer = null)
     {
-        return ConsumeBatch<T>(new string[] { topic }, action, cancleToken, groupId, maxChunkSize, start, deserializer);
+        return ConsumeBatch<T>(new string[] { topic }, handler, cancleToken, groupId, maxChunkSize, start, deserializer);
+    }
+    /// <summary>
+    /// Consume a batch of messages for a single topic
+    /// </summary>
+    /// <param name="topic"></param>
+    /// <param name="handler"></param>
+    /// <param name="cancleToken"></param>
+    /// <param name="groupId"></param>
+    /// <param name="maxChunkSize"></param>
+    /// <param name="start"></param>
+    /// <param name="deserializer"></param>
+    /// <typeparam name="T"></typeparam>
+    /// <returns></returns>
+    public Task ConsumeBatch<T>(string topic, Func<IEnumerable<T>, Task> handler,
+                                        CancellationToken cancleToken,
+                                        string groupId = "default",
+                                        int maxChunkSize = 500,
+                                        AutoOffsetReset start = AutoOffsetReset.Earliest,
+                                        IDeserializer<T>? deserializer = null)
+    {
+        return ConsumeBatch<T>(topic, (d, c) => handler(d), cancleToken, groupId, maxChunkSize, start, deserializer);
     }
 
     /// <summary>
@@ -82,7 +102,7 @@ public class KafkaConsumer
     /// </summary>
     /// <param name="config"></param>
     /// <param name="topics"></param>
-    /// <param name="action"></param>
+    /// <param name="handler"></param>
     /// <param name="cancleToken"></param>
     /// <param name="groupId"></param>
     /// <param name="maxChunkSize"></param>
@@ -90,7 +110,7 @@ public class KafkaConsumer
     /// <param name="deserializer"></param>
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
-    public async Task ConsumeBatch<T>(string[] topics, Func<IEnumerable<T>, Task> action,
+    public async Task ConsumeBatch<T>(string[] topics, Func<IEnumerable<T>, CancellationToken, Task> handler,
                                         CancellationToken cancleToken = default,
                                         string groupId = "default",
                                         int maxChunkSize = 500,
@@ -109,23 +129,23 @@ public class KafkaConsumer
             AutoOffsetReset = start,
             EnableAutoCommit = false,
             PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky
-        }, topics, action, cancleToken, maxChunkSize, deserializer);
+        }, topics, handler, cancleToken, maxChunkSize, deserializer);
     }
     public async Task ConsumeBatch<T>(
                                                 ConsumerConfig config,
                                                 string topic,
-                                                Func<IEnumerable<T>, Task> action,
+                                                Func<IEnumerable<T>, CancellationToken, Task> handler,
                                                 CancellationToken cancleToken,
                                                 int maxChunkSize = 500,
                                                 IDeserializer<T>? deserializer = null)
     {
-        await ConsumeBatch(config, new string[] { topic }, action, cancleToken, maxChunkSize, deserializer);
+        await ConsumeBatch(config, new string[] { topic }, handler, cancleToken, maxChunkSize, deserializer);
     }
 
     public async Task ConsumeBatch<T>(
                                             ConsumerConfig config,
                                             string[] topics,
-                                            Func<IEnumerable<T>, Task> action,
+                                            Func<IEnumerable<T>, CancellationToken, Task> handler,
                                             CancellationToken cancleToken,
                                             int maxChunkSize = 500,
                                             IDeserializer<T>? deserializer = default)
@@ -153,36 +173,11 @@ public class KafkaConsumer
                 {
                     try
                     {
-                        var extraLog = currentChunkSize < 2 && maxChunkSize > 2;
-                        if (extraLog)
-                            Console.WriteLine($"Polling for {currentChunkSize} messages from {string.Join(',', topics)}, config: {config.BootstrapServers}");
-                        var cr = c.Consume(cancleToken);
-                        batch.Enqueue(cr);
-                        if (extraLog)
-                            Console.WriteLine($"Consumed message '{cr.Message.Value}' at: '{cr.TopicPartitionOffset}'.");
-                        while (batch.Count < currentChunkSize)
-                        {
-                            cr = c.Consume(TimeSpan.Zero);
-                            if (cr == null)
-                            {
-                                break;
-                            }
-                            batch.Enqueue(cr);
-                        }
-                        await action(batch.Select(a => a.Message.Value)).ConfigureAwait(false);
-                        // tell kafka that we stored the batch
-                        if (!config.EnableAutoCommit ?? true)
-                            try
-                            {
-                                c.Commit(batch.Select(b => b.TopicPartitionOffset));
-                            }
-                            catch (KafkaException e)
-                            {
-                                _logger.LogError(e, $"On commit {string.Join(',', topics)} {e.Error.IsFatal}");
-                            }
+                        BuildBatch(config, topics, maxChunkSize, batch, currentChunkSize, c, cancleToken);
+                        await handler(batch.Select(a => a.Message.Value), cancleToken).ConfigureAwait(false);
+                        TellKafkaBatchProcessed(config, topics, batch, c);
                         batch.Clear();
-                        if (currentChunkSize < maxChunkSize)
-                            currentChunkSize++;
+                        currentChunkSize = IncreaseBatchSizeTillMax(maxChunkSize, currentChunkSize);
                     }
                     catch (ConsumeException e)
                     {
@@ -195,6 +190,46 @@ public class KafkaConsumer
                 // Ensure the consumer leaves the group cleanly and final offsets are committed.
                 c.Close();
             }
+        }
+
+        static void BuildBatch(ConsumerConfig config, string[] topics, int maxChunkSize, Queue<ConsumeResult<Ignore, T>> batch, int currentChunkSize, IConsumer<Ignore, T> c, CancellationToken cancleToken)
+        {
+            var extraLog = currentChunkSize < 2 && maxChunkSize > 2;
+            if (extraLog)
+                Console.WriteLine($"Polling for {currentChunkSize} messages from {string.Join(',', topics)}, config: {config.BootstrapServers}");
+            var cr = c.Consume(cancleToken);
+            batch.Enqueue(cr);
+            if (extraLog)
+                Console.WriteLine($"Consumed message '{cr.Message.Value}' at: '{cr.TopicPartitionOffset}'.");
+            while (batch.Count < currentChunkSize)
+            {
+                cr = c.Consume(TimeSpan.Zero);
+                if (cr == null)
+                {
+                    break;
+                }
+                batch.Enqueue(cr);
+            }
+        }
+
+        void TellKafkaBatchProcessed(ConsumerConfig config, string[] topics, Queue<ConsumeResult<Ignore, T>> batch, IConsumer<Ignore, T> c)
+        {
+            if (!config.EnableAutoCommit ?? true)
+                try
+                {
+                    c.Commit(batch.Select(b => b.TopicPartitionOffset));
+                }
+                catch (KafkaException e)
+                {
+                    _logger.LogError(e, $"On commit {string.Join(',', topics)} {e.Error.IsFatal}");
+                }
+        }
+
+        static int IncreaseBatchSizeTillMax(int maxChunkSize, int currentChunkSize)
+        {
+            if (currentChunkSize < maxChunkSize)
+                currentChunkSize++;
+            return currentChunkSize;
         }
     }
 }
