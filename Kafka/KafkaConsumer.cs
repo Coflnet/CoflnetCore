@@ -155,11 +155,11 @@ public class KafkaConsumer
                     {
                         var extraLog = currentChunkSize < 2 && maxChunkSize > 2;
                         if (extraLog)
-                            Console.WriteLine($"Polling for {currentChunkSize} messages from {string.Join(',', topics)}, config: {config.BootstrapServers}");
+                            _logger.LogInformation("Polling for {currentChunkSize} messages from {topics)}, config: {servers}", currentChunkSize, string.Join(',', topics), config.BootstrapServers);
                         var cr = c.Consume(cancleToken);
                         batch.Enqueue(cr);
                         if (extraLog)
-                            Console.WriteLine($"Consumed message '{cr.Message.Value}' at: '{cr.TopicPartitionOffset}'.");
+                            _logger.LogInformation("Consumed message '{message}' at: '{offset}'.", cr.Message.Value, cr.TopicPartitionOffset);
                         while (batch.Count < currentChunkSize)
                         {
                             cr = c.Consume(TimeSpan.Zero);
