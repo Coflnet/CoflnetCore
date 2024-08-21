@@ -21,11 +21,16 @@ public static class JaegerSercieExtention
             .AddHttpClientInstrumentation()
             .AddSqlClientInstrumentation()
             .AddConfluentKafkaInstrumentation()
-            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["JAEGER_SERVICE_NAME"] ?? "default"))
+            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["OTEL_SERVICE_NAME"] ?? config["JAEGER_SERVICE_NAME"] ?? "default"))
             .AddJaegerExporter(j =>
             {
                 j.Protocol = JaegerExportProtocol.UdpCompactThrift;
                 j.AgentHost = config["JAEGER_AGENT_HOST"];
+                if (config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != null)
+                {
+                    j.Endpoint = new Uri(config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]);
+                    j.Protocol = JaegerExportProtocol.HttpBinaryThrift;
+                }
                 j.BatchExportProcessorOptions = new BatchExportProcessorOptions<Activity> { MaxQueueSize = 2000, MaxExportBatchSize = 1000, ExporterTimeoutMilliseconds = 10000, ScheduledDelayMilliseconds = 1000 };
             })
             .SetSampler(new RationOrTimeBasedSampler(samplingRate, lowerBoundInSeconds))
@@ -124,5 +129,10 @@ public static class JaegerSercieExtention
 
             return result;
         }
+    }
+
+    public static Activity? Log(this Activity? activity, string message, int maxcontextLength = 6_000)
+    {
+        return activity?.AddEvent(new ActivityEvent("log", DateTimeOffset.Now, new ActivityTagsCollection(new[] { new KeyValuePair<string, object?>("message", message.Truncate(maxcontextLength)) })));
     }
 }
