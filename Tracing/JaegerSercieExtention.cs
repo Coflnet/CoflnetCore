@@ -15,26 +15,36 @@ public static class JaegerSercieExtention
 {
     public static void AddJaeger(this IServiceCollection services, IConfiguration config, double samplingRate = 0.03, double lowerBoundInSeconds = 60)
     {
+        var batchOptions = new BatchExportProcessorOptions<Activity>
+        {
+            MaxQueueSize = 2000,
+            MaxExportBatchSize = 1000,
+            ExporterTimeoutMilliseconds = 10000,
+            ScheduledDelayMilliseconds = 2000
+        };
         services.AddOpenTelemetry()
-            .WithTracing((builder) => builder
+        .WithTracing((builder) =>
+        {
+            builder
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
             .AddSqlClientInstrumentation()
             .AddConfluentKafkaInstrumentation()
-            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["OTEL_SERVICE_NAME"] ?? config["JAEGER_SERVICE_NAME"] ?? "default"))
-            .AddJaegerExporter(j =>
-            {
-                j.Protocol = JaegerExportProtocol.UdpCompactThrift;
-                j.AgentHost = config["JAEGER_AGENT_HOST"];
-                if (config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != null)
-                {
-                    j.Endpoint = new Uri(config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]);
-                    j.Protocol = JaegerExportProtocol.HttpBinaryThrift;
-                }
-                j.BatchExportProcessorOptions = new BatchExportProcessorOptions<Activity> { MaxQueueSize = 2000, MaxExportBatchSize = 1000, ExporterTimeoutMilliseconds = 10000, ScheduledDelayMilliseconds = 1000 };
-            })
             .SetSampler(new RationOrTimeBasedSampler(samplingRate, lowerBoundInSeconds))
-        );
+            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["OTEL_SERVICE_NAME"] ?? config["JAEGER_SERVICE_NAME"] ?? "default"));
+            if (config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != null)
+            {
+                builder.AddOtlpExporter(c => c.BatchExportProcessorOptions = batchOptions);
+            }
+            else
+                builder
+                .AddJaegerExporter(j =>
+                {
+                    j.Protocol = JaegerExportProtocol.UdpCompactThrift;
+                    j.AgentHost = config["JAEGER_AGENT_HOST"];
+                    j.BatchExportProcessorOptions = batchOptions;
+                });
+        });
     }
 
 
