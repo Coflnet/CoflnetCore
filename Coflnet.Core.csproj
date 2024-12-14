@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
@@ -13,7 +13,9 @@
     <PackageReference Include="CassandraCSharpDriver" Version="3.22.0" />
     <PackageReference Include="Confluent.Kafka" Version="2.5.3" />
     <PackageReference Include="Confluent.Kafka.Extensions.OpenTelemetry" Version="0.4.0" />
+    <PackageReference Include="FirebaseAdmin" Version="3.1.0" />
     <PackageReference Include="Messagepack" Version="2.5.187" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.4" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
@@ -27,6 +29,7 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.SqlClient" Version="1.9.0-beta.1" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
     <None Include="README.md" Pack="true" PackagePath="\" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
   </ItemGroup>
 
 </Project>
