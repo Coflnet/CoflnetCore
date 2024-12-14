@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using Coflnet.OpenApi;
 
 namespace Coflnet.Core.ErrorHandling;
 
@@ -46,14 +47,14 @@ public class ErrorHandler
                 logger.LogError("Could not start activity");
                 return;
             }
-            activity.AddTag("host", System.Net.Dns.GetHostName());
-            activity.AddEvent(new ActivityEvent("error", default, new ActivityTagsCollection(new KeyValuePair<string, object?>[] {
+            activity.AddTag("host", Dns.GetHostName());
+            activity.AddEvent(new ActivityEvent("error", default, new ActivityTagsCollection([
                         new ("error", exceptionHandlerPathFeature?.Error?.Message),
                         new ("stack", exceptionHandlerPathFeature?.Error?.StackTrace),
                         new ("path", context.Request.Path),
-                        new ("query", context.Request.QueryString) })));
-            var traceId = System.Net.Dns.GetHostName().Replace(serviceName, "").Trim('-') + "." + activity.Context.TraceId;
-            context.Response.Headers.Add("X-Trace-Id", traceId);
+                        new ("query", context.Request.QueryString) ])));
+            var traceId = Dns.GetHostName().Replace(serviceName, "").Trim('-') + "." + activity.Context.TraceId;
+            context.Response.Headers.Append("X-Trace-Id", traceId);
             await context.Response.WriteAsync(
                 JsonSerializer.Serialize(new ErrorResponse
                 {

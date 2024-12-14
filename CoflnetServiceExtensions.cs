@@ -7,6 +7,7 @@ using Prometheus;
 using Microsoft.Extensions.Logging;
 using Coflnet.Core.ErrorHandling;
 using Coflnet.Cassandra;
+using Coflnet.OpenApi;
 
 namespace Coflnet.Core;
 
@@ -23,6 +24,7 @@ public static class CoflnetServiceExtensions
         services.AddJaeger(config);
         services.AddKafka();
         services.AddCassandra();
+        services.AddOpenApi(config["OTEL_SERVICE_NAME"] ?? "Api");
     }
 
     /// <summary>

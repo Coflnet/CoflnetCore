@@ -1,4 +1,4 @@
-namespace Coflnet.Core;
+namespace Coflnet.OpenApi;
 
 public class ErrorResponse
 {
