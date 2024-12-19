@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using FirebaseAdmin.Auth;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Coflnet.Auth;
 
@@ -55,19 +56,19 @@ public static class AuthExtensions
                     }
                 };
             });
+
+        builder.Services.AddEndpointsApiExplorer();
         return builder.Services;
     }
 
     public static void UseCoflAuthService(this WebApplication app)
     {
-        app.MapPost("/api/auth/firebase", async context =>
+        app.MapPost("/api/auth/firebase", async ([FromBody] TokenContainer request) =>
         {
-            var authService = context.RequestServices.GetRequiredService<AuthService>();
-            var request = await context.Request.ReadFromJsonAsync<TokenContainer>();
+            var authService = app.Services.GetRequiredService<AuthService>();
             if (request == null)
             {
-                context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                return;
+                return Results.BadRequest();
             }
             FirebaseToken decodedToken = await FirebaseAuth.DefaultInstance
                 .VerifyIdTokenAsync(request.AuthToken);
@@ -82,9 +83,11 @@ public static class AuthExtensions
                 await authService.UpdateUserLastSeenAt(user);
             }
             var response = new TokenContainer { AuthToken = authService.CreateTokenFor(userId!) };
-            await context.Response.WriteAsJsonAsync(response);
+            return Results.Ok(response);
         })
-        .WithName("LoginFirebase");
+        .WithName("LoginFirebase")
+        .Produces<TokenContainer>(StatusCodes.Status200OK); // Define 200 OK with a response model
+
         app.UseAuthentication();
         app.UseAuthorization();
     }
