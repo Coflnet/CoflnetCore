@@ -35,14 +35,16 @@ public static class CoflnetServiceExtensions
     /// <returns></returns>
     public static IApplicationBuilder UseCoflnetCore(this IApplicationBuilder builder)
     {
+        var config = builder.ApplicationServices.GetRequiredService<IConfiguration>();
+        var serviceName = config["SERVICE_NAME"] ?? config["OTEL_SERVICE_NAME"] ?? "default";
         builder.UseExceptionHandler(errorApp =>
         {
             var config = errorApp.ApplicationServices.GetRequiredService<IConfiguration>();
             var logger = errorApp.ApplicationServices.GetRequiredService<ILogger<ErrorHandler>>();
-            var serviceName = config["SERVICE_NAME"] ?? "default";
             ErrorHandler.Add(logger, errorApp, serviceName);
         });
         builder.UseMetricServer();
+        builder.UseOpenApi(serviceName);
         return builder;
     }
 }
