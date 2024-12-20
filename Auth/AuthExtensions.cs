@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using FirebaseAdmin.Auth;
 using Microsoft.AspNetCore.Mvc;
+using Coflnet.Core;
 
 namespace Coflnet.Auth;
 
@@ -90,6 +91,11 @@ public static class AuthExtensions
 
         app.UseAuthentication();
         app.UseAuthorization();
+    }
+
+    public static Guid GetUserId(this ControllerBase controller)
+    {
+        return Guid.Parse(controller.User.Claims.FirstOrDefault(c => c.Type == "sub")?.Value ?? throw new ApiException("missing_user_id", "User id not found in claims"));
     }
 }
 
