@@ -71,7 +71,8 @@ public static class AuthExtensions
             {
                 return Results.BadRequest();
             }
-            FirebaseToken decodedToken = await FirebaseAuth.DefaultInstance
+            var instance = FirebaseAuth.DefaultInstance ?? throw new ApiException("firebase_not_initialized", "Firebase admin not initialized");
+            FirebaseToken decodedToken = await instance
                 .VerifyIdTokenAsync(request.AuthToken);
             var user = await authService.GetUser(decodedToken.Subject);
             var userId = user?.Id ?? default;
@@ -87,6 +88,8 @@ public static class AuthExtensions
             return Results.Ok(response);
         })
         .WithName("LoginFirebase")
+        .WithDisplayName("Login with Firebase")
+        .WithGroupName("Auth")
         .Produces<TokenContainer>(StatusCodes.Status200OK); // Define 200 OK with a response model
 
         app.UseAuthentication();

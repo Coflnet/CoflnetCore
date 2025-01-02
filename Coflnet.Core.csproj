@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
