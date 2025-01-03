@@ -7,7 +7,7 @@ public class ErrorResponseOperationFilter : IOperationFilter
 {
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
-        operation.Responses.Add("400", new OpenApiResponse
+        operation.Responses["400"] = new OpenApiResponse
         {
             Description = "Bad Request",
             Content = new Dictionary<string, OpenApiMediaType>
@@ -39,8 +39,8 @@ public class ErrorResponseOperationFilter : IOperationFilter
                     }
                 }
             }
-        });
-        operation.Responses.Add("500", new OpenApiResponse
+        };
+        operation.Responses["500"] = new OpenApiResponse
         {
             Description = "Internal Server Error",
             Content = new Dictionary<string, OpenApiMediaType>
@@ -79,6 +79,6 @@ public class ErrorResponseOperationFilter : IOperationFilter
                     }
                 }
             }
-        });
+        };
     }
 }

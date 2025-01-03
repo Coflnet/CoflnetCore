@@ -90,6 +90,11 @@ public static class AuthExtensions
         .WithName("LoginFirebase")
         .WithDisplayName("Login with Firebase")
         .WithTags("Auth")
+        .WithOpenApi(op =>
+        {
+            op.OperationId = "LoginFirebase";
+            return op;
+        })
         .Produces<TokenContainer>(StatusCodes.Status200OK); // Define 200 OK with a response model
 
         app.UseAuthentication();
