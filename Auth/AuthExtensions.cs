@@ -89,7 +89,7 @@ public static class AuthExtensions
         })
         .WithName("LoginFirebase")
         .WithDisplayName("Login with Firebase")
-        .WithGroupName("Auth")
+        .WithTags("Auth")
         .Produces<TokenContainer>(StatusCodes.Status200OK); // Define 200 OK with a response model
 
         app.UseAuthentication();
