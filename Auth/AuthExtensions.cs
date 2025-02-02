@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using FirebaseAdmin.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Coflnet.Core;
+using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Auth;
 
@@ -40,7 +41,8 @@ public static class AuthExtensions
                 {
                     OnChallenge = c =>
                     {
-                        Console.WriteLine(c.Error);
+                        var logger = c.HttpContext.RequestServices.GetRequiredService<ILogger<AuthService>>();
+                        logger.LogError("authentication challenge {error}", c.Error);
                         return Task.CompletedTask;
                     },
                     OnAuthenticationFailed = context =>
@@ -51,7 +53,8 @@ public static class AuthExtensions
                         }
                         else
                         {
-                            Console.WriteLine(context.Exception);
+                            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<AuthService>>();
+                            logger.LogError(context.Exception, "authentication issue");
                         }
                         return Task.CompletedTask;
                     }
