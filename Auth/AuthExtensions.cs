@@ -9,6 +9,8 @@ using FirebaseAdmin.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Coflnet.Core;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Coflnet.Auth;
 
@@ -74,14 +76,30 @@ public static class AuthExtensions
             {
                 return Results.BadRequest();
             }
+            string externalUserId = "";
+            if (!request.AuthToken.StartsWith("ey"))
+            {
+                // is an accesstoken not id
+                HttpClient client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", request.AuthToken);
+                var userInfoResponse = await client.GetStringAsync("https://www.googleapis.com/oauth2/v1/userinfo?alt=json");
+                Console.WriteLine(userInfoResponse);    
+                var userInfo = JsonSerializer.Deserialize<GoogleUserInfo>(userInfoResponse);
+                externalUserId = userInfo.Id;
+            }
+            else
+            {
             var instance = FirebaseAuth.DefaultInstance ?? throw new ApiException("firebase_not_initialized", "Firebase admin not initialized");
-            FirebaseToken decodedToken = await instance
-                .VerifyIdTokenAsync(request.AuthToken);
-            var user = await authService.GetUser(decodedToken.Subject);
+                // is an idtoken
+                FirebaseToken decodedToken = await instance
+                    .VerifyIdTokenAsync(request.AuthToken);
+                externalUserId = decodedToken.Subject;
+            }
+            var user = await authService.GetUser(externalUserId!);
             var userId = user?.Id ?? default;
             if (user == default)
             {
-                userId = await authService.CreateUser(decodedToken.Subject, null, null, null);
+                userId = await authService.CreateUser(externalUserId!, null, null, null);
             }
             else
             {
@@ -102,6 +120,24 @@ public static class AuthExtensions
 
         app.UseAuthentication();
         app.UseAuthorization();
+    }
+
+    public class GoogleUserInfo
+    {
+        [JsonPropertyName("id")]
+        public string Id { get; set; }
+        [JsonPropertyName("email")]
+        public string Email { get; set; }
+        [JsonPropertyName("verified_email")]
+        public bool VerifiedEmail { get; set; }
+        [JsonPropertyName("name")]
+        public string Name { get; set; }
+        [JsonPropertyName("given_name")]
+        public string GivenName { get; set; }
+        [JsonPropertyName("family_name")]
+        public string FamilyName { get; set; }
+        [JsonPropertyName("picture")]
+        public string Picture { get; set; }
     }
 
     public static Guid GetUserId(this ControllerBase controller)
