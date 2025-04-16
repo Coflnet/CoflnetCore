@@ -31,8 +31,9 @@ public class ErrorHandler
 
             var exceptionHandlerPathFeature =
                 context.Features.Get<IExceptionHandlerPathFeature>();
+                var error = exceptionHandlerPathFeature?.Error;
 
-            if (exceptionHandlerPathFeature?.Error is ApiException ex)
+            if (error is ApiException ex)
             {
                 context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
                 await context.Response.WriteAsync(
@@ -40,6 +41,15 @@ public class ErrorHandler
                 badRequestCount.Inc();
                 return;
             }
+            // error of another service
+            else if (error != null && error.Message.StartsWith("Error calling ") && error.Message.Contains("trace\":"))
+            {
+                // Json error response after first :
+                var split = error.Message.Split(":", 2);
+                await context.Response.WriteAsync(split[1]);
+                return;
+            }
+
             var source = context.RequestServices.GetService<ActivitySource>();
             using var activity = source?.StartActivity("error", ActivityKind.Producer);
             if (activity == null)
