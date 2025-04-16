@@ -67,7 +67,7 @@ public class AuthService
         await userDb.Insert(user).ExecuteAsync();
     }
 
-    public string CreateTokenFor(Guid userId, int validForDays = 30)
+    public string CreateTokenFor(Guid userId, int validForDays = 30, params Claim[] claims)
     {
         string key = config["jwt:secret"] ?? throw new Exception("jwt:secret not set"); //Secret key which will be used later during validation
         var issuer = config["jwt:issuer"] ?? throw new Exception("jwt:secret not set");
@@ -81,6 +81,7 @@ public class AuthService
             new (JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
             new (JwtRegisteredClaimNames.Sub, userId.ToString())
         };
+        permClaims.AddRange(claims);
 
         //Create Security Token object by giving required parameters    
         var token = new JwtSecurityToken(issuer, //Issure    
