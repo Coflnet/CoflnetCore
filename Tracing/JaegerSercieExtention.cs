@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Collections.Concurrent;
 
 namespace Coflnet.Core.Tracing;
+
 public static class JaegerSercieExtention
 {
     public static void AddJaeger(this IServiceCollection services, IConfiguration config, double samplingRate = 0.03, double lowerBoundInSeconds = 60)
@@ -36,7 +37,7 @@ public static class JaegerSercieExtention
             {
                 builder.AddOtlpExporter(c => c.BatchExportProcessorOptions = batchOptions);
             }
-            else
+            else if (config["JAEGER_AGENT_HOST"] != null)
                 builder
                 .AddJaegerExporter(j =>
                 {
@@ -44,6 +45,8 @@ public static class JaegerSercieExtention
                     j.AgentHost = config["JAEGER_AGENT_HOST"];
                     j.BatchExportProcessorOptions = batchOptions;
                 });
+            else
+                throw new Exception("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT has to be set");
         });
     }
 
