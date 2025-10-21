@@ -20,7 +20,7 @@ public static class AuthExtensions
     {
         builder.Services.AddSingleton<AuthService>();
         // from config
-        var issuer = builder.Configuration["jwt:issuer"];
+        var issuer = builder.Configuration["jwt:issuer"] ?? throw new InvalidOperationException("jwt:issuer is missing in the configuration.");
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["jwt:secret"] ?? throw new InvalidOperationException("jwt:secret is missing in the configuration.")));
         // override default claim mapping to not remab "sub" to "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"
         JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear();
@@ -89,7 +89,7 @@ public static class AuthExtensions
             }
             else
             {
-            var instance = FirebaseAuth.DefaultInstance ?? throw new ApiException("firebase_not_initialized", "Firebase admin not initialized");
+            var instance = FirebaseAuth.DefaultInstance ?? throw new ApiException("firebase_not_initialized", "Firebase admin not initialized, make sure to do that in Program.cs");
                 // is an idtoken
                 FirebaseToken decodedToken = await instance
                     .VerifyIdTokenAsync(request.AuthToken);
