@@ -12,9 +12,9 @@ using System.Collections.Concurrent;
 
 namespace Coflnet.Core.Tracing;
 
-public static class JaegerSercieExtention
+public static class TracingServiceExtention
 {
-    public static void AddJaeger(this IServiceCollection services, IConfiguration config, double samplingRate = 0.03, double lowerBoundInSeconds = 60)
+    public static void AddTracing(this IServiceCollection services, IConfiguration config, double samplingRate = 0.03, double lowerBoundInSeconds = 60)
     {
         var batchOptions = new BatchExportProcessorOptions<Activity>
         {
@@ -33,7 +33,20 @@ public static class JaegerSercieExtention
             .AddConfluentKafkaInstrumentation()
             .SetSampler(new RationOrTimeBasedSampler(samplingRate, lowerBoundInSeconds))
             .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(config["OTEL_SERVICE_NAME"] ?? config["JAEGER_SERVICE_NAME"] ?? "default"));
-            if (config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != null)
+            if (config["OTEL_EXPORTER_OTLP_ENDPOINT"] != null)
+            {
+                builder.AddOtlpExporter(c =>
+                {
+                    c.BatchExportProcessorOptions = batchOptions;
+                    c.Protocol = OtlpExportProtocol.HttpProtobuf;
+                });
+                // Log that OTLP exporter will be used
+                using var sp = services.BuildServiceProvider();
+                var logger = sp.GetService<ILoggerFactory>()?.CreateLogger(nameof(TracingServiceExtention));
+                logger?.LogInformation("Using OTLP exporter. Endpoint: {Endpoint}, Protocol: {Protocol}",
+                    config["OTEL_EXPORTER_OTLP_ENDPOINT"], OtlpExportProtocol.HttpProtobuf);
+            }
+            else if (config["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != null)
             {
                 builder.AddOtlpExporter(c => c.BatchExportProcessorOptions = batchOptions);
             }

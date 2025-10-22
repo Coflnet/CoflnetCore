@@ -21,7 +21,7 @@ public static class CoflnetServiceExtensions
     {
         var sp = services.BuildServiceProvider();
         var config = sp.GetRequiredService<IConfiguration>();
-        services.AddJaeger(config);
+        services.AddTracing(config);
         services.AddKafka();
         services.AddCassandra();
         services.AddOpenApi(config["OTEL_SERVICE_NAME"] ?? "Api");
