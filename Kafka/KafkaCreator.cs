@@ -109,6 +109,34 @@ public class KafkaCreator
         };
     }
 
+    /// <summary>
+    /// Get a ConsumerConfig with proper mTLS/SASL security settings from configuration.
+    /// Used for creating consumer clients that need to connect with the same security as admin/producer clients.
+    /// </summary>
+    /// <param name="config">IConfiguration section or root config</param>
+    /// <param name="groupId">Consumer group ID (optional, can be set after)</param>
+    /// <returns>ConsumerConfig with all TLS/SASL settings properly configured</returns>
+    public static ConsumerConfig GetConsumerConfig(IConfiguration config, string? groupId = null)
+    {
+        if (config["BROKERS"] == null)
+            config = config.GetSection("KAFKA");
+        
+        var baseConfig = GetClientConfig(config);
+        var consumerConfig = new ConsumerConfig(baseConfig)
+        {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = true,
+            StatisticsIntervalMs = 60000
+        };
+        
+        if (!string.IsNullOrEmpty(groupId))
+        {
+            consumerConfig.GroupId = groupId;
+        }
+        
+        return consumerConfig;
+    }
+
     public IProducer<TKey, TRes> BuildProducer<TKey, TRes>(bool serializeToMsgPack = false, Func<ProducerBuilder<TKey, TRes>, ProducerBuilder<TKey, TRes>> configure = null)
     {
         var producerConfig = GetProducerconfig(config);
