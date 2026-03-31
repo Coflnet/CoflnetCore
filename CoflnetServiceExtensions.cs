@@ -24,7 +24,7 @@ public static class CoflnetServiceExtensions
         services.AddTracing(config);
         services.AddKafka();
         services.AddCassandra();
-        services.AddOpenApi(config["OTEL_SERVICE_NAME"] ?? "Api");
+        services.AddCoflnetOpenApi(config["OTEL_SERVICE_NAME"] ?? "Api");
     }
 
     /// <summary>

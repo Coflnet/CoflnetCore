@@ -1,4 +1,4 @@
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Coflnet.OpenApi;
@@ -17,20 +17,20 @@ public class ErrorResponseOperationFilter : IOperationFilter
                     {
                         Schema = new OpenApiSchema
                         {
-                            Type = "object",
-                            Properties = new Dictionary<string, OpenApiSchema>
+                            Type = JsonSchemaType.Object,
+                            Properties = new Dictionary<string, IOpenApiSchema>
                             {
                                 {
                                     "slug", new OpenApiSchema
                                     {
-                                        Type = "string",
+                                        Type = JsonSchemaType.String,
                                         Description = "Human readable id for this kind of error"
                                     }
                                 },
                                 {
                                     "message", new OpenApiSchema
                                     {
-                                        Type = "string",
+                                        Type = JsonSchemaType.String,
                                         Description = "More info about the error, may sometimes be sufficient to display to user"
                                     }
                                 }
@@ -50,27 +50,27 @@ public class ErrorResponseOperationFilter : IOperationFilter
                     {
                         Schema = new OpenApiSchema
                         {
-                            Type = "object",
-                            Properties = new Dictionary<string, OpenApiSchema>
+                            Type = JsonSchemaType.Object,
+                            Properties = new Dictionary<string, IOpenApiSchema>
                             {
                                 {
                                     "slug", new OpenApiSchema
                                     {
-                                        Type = "string",
+                                        Type = JsonSchemaType.String,
                                         Description = "Human readable id for this kind of error"
                                     }
                                 },
                                 {
                                     "message", new OpenApiSchema
                                     {
-                                        Type = "string",
+                                        Type = JsonSchemaType.String,
                                         Description = "Unknown error occured"
                                     }
                                 },
                                 {
                                     "trace", new OpenApiSchema
                                     {
-                                        Type = "string",
+                                        Type = JsonSchemaType.String,
                                         Description = "Id for the error report with this id"
                                     }
                                 }

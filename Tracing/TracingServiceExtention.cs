@@ -52,11 +52,11 @@ public static class TracingServiceExtention
             }
             else if (config["JAEGER_AGENT_HOST"] != null)
                 builder
-                .AddJaegerExporter(j =>
+                .AddOtlpExporter(c =>
                 {
-                    j.Protocol = JaegerExportProtocol.UdpCompactThrift;
-                    j.AgentHost = config["JAEGER_AGENT_HOST"];
-                    j.BatchExportProcessorOptions = batchOptions;
+                    c.Endpoint = new Uri($"http://{config["JAEGER_AGENT_HOST"]}:4318");
+                    c.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    c.BatchExportProcessorOptions = batchOptions;
                 });
             else
                 throw new Exception("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT has to be set");

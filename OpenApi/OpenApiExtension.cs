@@ -1,14 +1,14 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Coflnet.OpenApi;
 
 public static class OpenApiExtension
 {
-    public static void AddOpenApi(this IServiceCollection services, string title)
+    public static void AddCoflnetOpenApi(this IServiceCollection services, string title)
     {
         services.AddSwaggerGen(c =>
         {
@@ -31,18 +31,11 @@ public static class OpenApiExtension
             {
                 return apiDesc.TryGetMethodInfo(out MethodInfo methodInfo) ? methodInfo.Name : "xy";
             });
-            c.AddSecurityRequirement(new OpenApiSecurityRequirement
+            c.AddSecurityRequirement(doc => new OpenApiSecurityRequirement
             {
                 {
-                    new OpenApiSecurityScheme
-                    {
-                        Reference = new OpenApiReference
-                        {
-                            Type = ReferenceType.SecurityScheme,
-                            Id = "Bearer"
-                        }
-                    },
-                    new string[] { }
+                    new OpenApiSecuritySchemeReference("Bearer"),
+                    new List<string>()
                 }
             });
             // Set the comments path for the Swagger JSON and UI.
