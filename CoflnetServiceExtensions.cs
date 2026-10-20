@@ -22,6 +22,8 @@ public static class CoflnetServiceExtensions
         var sp = services.BuildServiceProvider();
         var config = sp.GetRequiredService<IConfiguration>();
         services.AddTracing(config);
+        services.AddLogging(logging =>
+            logging.AddOpenTelemetryLogging(config, config["OTEL_SERVICE_NAME"] ?? "CoflService"));
         services.AddKafka();
         services.AddCassandra();
         services.AddCoflnetOpenApi(config["OTEL_SERVICE_NAME"] ?? "Api");
