@@ -32,4 +32,11 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Coflnet.Core.Tests/**" />
+    <None Remove="Coflnet.Core.Tests/**" />
+    <Content Remove="Coflnet.Core.Tests/**" />
+    <EmbeddedResource Remove="Coflnet.Core.Tests/**" />
+  </ItemGroup>
+
 </Project>
