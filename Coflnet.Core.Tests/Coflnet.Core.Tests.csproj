@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Microsoft.OpenApi" Version="2.12.2" />
+    <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="NUnit" Version="4.4.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="5.0.0" />
   </ItemGroup>
@@ -19,4 +20,18 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <Target Name="PreparePrivateCertificateStore" BeforeTargets="VSTest">
+    <PropertyGroup>
+      <_CertificateTestId>$([System.Guid]::NewGuid())</_CertificateTestId>
+      <_CertificateTestHome>$([System.IO.Path]::GetTempPath())coflnet-tests-$(_CertificateTestId)</_CertificateTestHome>
+      <RunSettingsFilePath>$(MSBuildProjectDirectory)/obj/certificate-tests-$(_CertificateTestId).runsettings</RunSettingsFilePath>
+    </PropertyGroup>
+    <MakeDir Directories="$(_CertificateTestHome)" />
+    <WriteLinesToFile File="$(RunSettingsFilePath)" Overwrite="true"
+      Lines="&lt;RunSettings&gt;&lt;RunConfiguration&gt;&lt;EnvironmentVariables&gt;&lt;HOME&gt;$(_CertificateTestHome)&lt;/HOME&gt;&lt;COFLNET_TEST_HOME&gt;$(_CertificateTestHome)&lt;/COFLNET_TEST_HOME&gt;&lt;/EnvironmentVariables&gt;&lt;/RunConfiguration&gt;&lt;/RunSettings&gt;" />
+  </Target>
+  <Target Name="RemovePrivateCertificateStore" AfterTargets="VSTest">
+    <RemoveDir Directories="$(_CertificateTestHome)" />
+    <Delete Files="$(RunSettingsFilePath)" />
+  </Target>
 </Project>

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Version>0.7.5</Version>
+    <Version>0.7.6</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Coflnet.Core.Tests" />
     <Compile Remove="Coflnet.Core.Tests/**" />
     <None Remove="Coflnet.Core.Tests/**" />
     <Content Remove="Coflnet.Core.Tests/**" />

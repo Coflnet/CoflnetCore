@@ -18,7 +18,6 @@ namespace Coflnet.Core.Tests;
 public class PemTlsTests
 {
     private string directory = null!;
-    private string? previousHome;
     private string homeDirectory = null!;
     private X509Certificate2 root = null!;
     private X509Certificate2 nextRoot = null!;
@@ -30,19 +29,11 @@ public class PemTlsTests
     private PemTlsOptions credentials = null!;
 
     [OneTimeSetUp]
-    public void IsolateUserCertificateStore()
+    public void RequireProcessIsolatedUserCertificateStore()
     {
-        homeDirectory = Path.Combine(Path.GetTempPath(), "coflnet-tls-home-" + Guid.NewGuid());
-        Directory.CreateDirectory(homeDirectory);
-        previousHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", homeDirectory);
-    }
-
-    [OneTimeTearDown]
-    public void RemoveUserCertificateStore()
-    {
-        Environment.SetEnvironmentVariable("HOME", previousHome);
-        Directory.Delete(homeDirectory, true);
+        homeDirectory = Environment.GetEnvironmentVariable("COFLNET_TEST_HOME")
+            ?? throw new InvalidOperationException("Run dotnet test through the project so private test-host HOME settings are applied.");
+        Assert.That(Environment.GetEnvironmentVariable("HOME"), Is.EqualTo(homeDirectory));
     }
 
     [SetUp]

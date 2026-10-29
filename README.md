@@ -166,3 +166,67 @@ Perform no file reads, chain building or store registration on pooled reuse:
 doing that for every logical open caused sustained CPU throttling in the live
 PlayerName pilot. The certificate provider and strict validation callback reload
 material on physical TLS handshakes; broken replacements fail closed there.
+
+### Kafka consumer renewal (0.7.6, opt-in)
+
+`KAFKA:TLS:RELOAD_ON_CHANGE=true` opts the single-topic `KafkaConsumer.Consume`
+path into native handle reconstruction. Default behavior and producer APIs stay
+unchanged. Activation is limited to SASL_SSL with the existing SASL username and
+credentials; bare-SSL certificate-principal changes are outside this consumer path.
+Continue using `KAFKA:TLS:CA_LOCATION`, `CERTIFICATE_LOCATION` and
+`KEY_LOCATION`; no global or producer cutover is implied.
+
+The consumer watches containing directories, including Kubernetes projected
+`..data` replacement. On a new generation it validates an immutable CA/fullchain/
+key snapshot and client EKU/lifetime, then preflights read-only topic metadata with
+a separate AdminClient and the existing SASL settings, bounded at 60 seconds.
+Location fields are cleared when PEM strings are installed, so concurrent file
+replacement cannot change a preflighted candidate. Incomplete, invalid, near-expiry
+replacements leave the current native context running and wait for new material.
+A locally validated snapshot that fails network preflight or native handoff is
+retried quietly after 30 seconds, doubling to a five-minute cap. Retries reuse
+that immutable snapshot without reading files or rebuilding certificate chains;
+a new file event cancels/supersedes old retries, including stale preflight results.
+Failures log once per material generation/type, with no heartbeat logs. An
+already preflighted candidate may remain pending when
+a later generation is rejected; its lifetime is checked again at the drain
+boundary. No file polling or per-record certificate/chain work is performed.
+
+After successful preflight, idle consumption is interrupted; a record returned
+concurrently with cancellation is still processed. In-flight work/commit finish
+at a safe boundary, then an unsubscribed replacement native consumer is built
+while the old handle is alive. Pre-Close build/auth/expiry/supersession failure
+retains the original handle. After Close, the old handle cannot be resurrected:
+failed handoff reconstructs the previous validated immutable generation and
+explicitly reports failure. Assignment/auth readiness is bounded at 60 seconds
+and requires no business message, so empty topics are supported. Candidate
+validity is checked again after Close and assignment.
+
+The opt-in path disables auto-commit and auto-offset-store and explicitly commits
+the next offset for each processed partition. Close cannot acknowledge a fetched
+but unprocessed record; commit failure may still cause replay. Exactly-once
+delivery is not promised. Legacy offset values and Close behavior remain
+unchanged outside opt-in rotation. Independent configuration dictionaries keep
+candidate/preflight settings from mutating the previous generation.
+
+Metadata preflight proves transport/metadata access, not consumer-group/read ACLs
+or application delivery. Production enrollment still needs fresh-handle delivery,
+broker identity, rebalance, malformed renewal and rollback evidence. If no valid
+renewal arrives before the old leaf expires, retaining an old context cannot make
+its next handshake valid; expiry alerting/recovery remains mandatory. Do not
+activate a short-lived Kafka leaf merely because its Secret renewed.
+
+Run tests with `dotnet test Coflnet.Core.Tests/Coflnet.Core.Tests.csproj`; the
+test project supplies a private HOME to the test host at process launch, before
+any X509 store path can cache. Restore keeps normal authentication/configuration.
+The store-failure fixture uses that actual process store and never changes HOME
+in-process. The test target removes the private test home afterward.
+The explicit `NativeFullChainRotationRebuildsTheHandleAndDeliversWithStrictServerValidation`
+test starts only a private local Docker network and loopback broker from cached
+`redpandadata/redpanda@sha256:df0d30a08e464fd4f2dfde9735f9b5e73f7cd1d81de87a86a97df859c01bf091`;
+it uses synthetic keys/messages and removes its
+container/network afterward. It proves renewal with two members sharing one
+partition, including a member with no partitions, and delivery after renewal.
+Injected post-Close recovery is unit-tested; native broker failure injection
+remains unverified. Local fixture success does not attest production broker
+identity, account permissions or ACLs. It does not use any production Kafka endpoint.
