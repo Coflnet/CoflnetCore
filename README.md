@@ -148,19 +148,21 @@ fallback before authentication. Preserve database usernames/passwords and requir
 normal hostname validation for every configured host.
 
 The driver's native `SslCert`/`SslKey` loader supplies only the leaf certificate.
-Call `RegisterClientIntermediates()` before opening connections to register the
-validated non-root public intermediates in the workload UID's CurrentUser CA
-store. A private, writable, ephemeral `HOME` is required on Linux. Do not install
-root certificates or modify machine trust. Fullchain transmission was verified
-against a separate native MariaDB process with root-only trust, a different
-server intermediate, and an account requiring X509 client authentication.
+Use `ProvideClientCertificatesCallback` to call `RegisterClientIntermediates()`
+and add `GetCertificate()` to its collection on fresh physical TLS connections.
+Clear native `SslCert`/`SslKey` settings so they cannot override that provider.
+Only validated non-root public intermediates enter the workload UID's CurrentUser
+CA store; a private writable ephemeral `HOME` is required on Linux. No machine
+or root trust store is changed. A separate MariaDB process with root-only trust,
+a different server intermediate and an account requiring X509 verified fullchain
+transmission, client renewal and old-client-root rejection.
 
-The native driver rereads PEM certificate/key and CA inputs on fresh physical
-connections; Core reloads its configured trust bundle in the callback. Reusing a
-pooled physical connection does not renegotiate TLS. Set a bounded pool
+Pooled physical connections do not renegotiate TLS. Set a bounded
 `ConnectionLifeTime` (for example, at most 300 seconds while preserving a shorter
-explicit value), and publish certificate/key pairs atomically. Existing
-connections can remain active; broken replacements fail closed on new opens.
-An EF `DbConnectionInterceptor` can install the callback and prepare intermediates
-for both synchronous and asynchronous opens without application-specific
-background watchers.
+explicit value), and publish certificate/key pairs atomically. An EF
+`DbConnectionInterceptor` should only install the strict validation and client
+certificate-provider callbacks for synchronous/asynchronous logical opens.
+Perform no file reads, chain building or store registration on pooled reuse:
+doing that for every logical open caused sustained CPU throttling in the live
+PlayerName pilot. The certificate provider and strict validation callback reload
+material on physical TLS handshakes; broken replacements fail closed there.
