@@ -131,3 +131,36 @@ the current root bundle, client EKU and validity dates. This callback rejects a
 missing certificate; an application offering optional mTLS must make its own
 explicit decision for clients that present none. It performs no client DNS-name
 check. The library does not configure listeners or alter existing HTTP endpoints.
+
+### MySqlConnector 2.6.2 and MariaDB
+
+For strict private-PKI verification, use a single long-lived `PemTlsOptions`
+owner and install its `ValidateServerCertificate` callback on every
+`MySqlConnection` before opening it. Use the driver's supported `SslMode=Required`
+with an empty native `SslCa`: setting `SslCa`, `VerifyCA` or `VerifyFull` prevents
+that custom callback from running. This is verified TLS through the strict
+callback, not acceptance of certificate errors.
+
+A real MariaDB 11.8.8 test demonstrated that native `VerifyFull` can accept both
+wrong-name and unknown-CA certificates using MariaDB's password-bound TLS
+fingerprint. The strict Core callback returns false during TLS and prevents that
+fallback before authentication. Preserve database usernames/passwords and require
+normal hostname validation for every configured host.
+
+The driver's native `SslCert`/`SslKey` loader supplies only the leaf certificate.
+Call `RegisterClientIntermediates()` before opening connections to register the
+validated non-root public intermediates in the workload UID's CurrentUser CA
+store. A private, writable, ephemeral `HOME` is required on Linux. Do not install
+root certificates or modify machine trust. Fullchain transmission was verified
+against a separate native MariaDB process with root-only trust, a different
+server intermediate, and an account requiring X509 client authentication.
+
+The native driver rereads PEM certificate/key and CA inputs on fresh physical
+connections; Core reloads its configured trust bundle in the callback. Reusing a
+pooled physical connection does not renegotiate TLS. Set a bounded pool
+`ConnectionLifeTime` (for example, at most 300 seconds while preserving a shorter
+explicit value), and publish certificate/key pairs atomically. Existing
+connections can remain active; broken replacements fail closed on new opens.
+An EF `DbConnectionInterceptor` can install the callback and prepare intermediates
+for both synchronous and asynchronous opens without application-specific
+background watchers.
