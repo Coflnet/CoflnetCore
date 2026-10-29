@@ -48,3 +48,86 @@ Bump `<Version>` in `Coflnet.Core.csproj` and merge to `main`. The `Package` wor
 (`.github/workflows/package.yml`) runs the tests, packs, attests the build and publishes `Coflnet.Core`
 to nuget.org via NuGet trusted publishing; no API key is stored anywhere. A version that already exists
 on nuget.org is skipped. `publishPackage.sh` only packs locally into `./out`.
+
+## PEM mutual TLS
+
+`AddCassandra()` accepts `CASSANDRA:TLS:CA_CERT_PATH`, `CASSANDRA:TLS:CERT_PATH`
+and `CASSANDRA:TLS:KEY_PATH` (likewise under `OLD_CASSANDRA`). Set all three to
+mounted PEM files. The CA file may contain overlapping old and new root
+certificates. TLS is opt-in; Cassandra username/password authentication remains
+in place. Existing `X509Certificate_PATHS`, `X509Certificate_PASSWORD` and
+`X509Certificate_VALIDATION_PATH` PFX configuration remains supported. Without a
+legacy custom CA, normal platform validation applies; invalid certificates are
+never implicitly accepted.
+
+PEM Cassandra connections validate the discovered endpoint's **IP SAN** by
+default. If every node has a shared DNS SAN, set `TLS:SERVER_NAME` explicitly to
+that name; this changes the TLS target name and still requires a matching SAN.
+Legacy server certificates without SANs use normal TLS common-name matching;
+there is no hostname-error exception. New PKI certificates should include SANs.
+Server certificates require valid dates, server authentication usage and a chain
+to the configured bundle; platform trust alone cannot bypass that bundle.
+Revocation network lookups are disabled for this private PKI. Use short-lived
+certificates and remove retired roots from the bundle after the overlap window.
+
+PEM files are read for every new handshake, so atomic projected-volume renewal
+needs no process restart and leaves active connections alone. Broken, mismatched
+or expired replacements fail closed. Cassandra refresh uses the supported
+`SSLOptions.HostNameResolver` hook immediately before the driver reads its client
+certificate collection. This ordering is verified against **CassandraCSharpDriver
+3.23.0** by a real loopback TLS test; run that test when upgrading the driver.
+
+Other TLS clients can use `Coflnet.Core.Security.PemTlsOptions` without a Redis
+package dependency in Core. For StackExchange.Redis, retain your existing parsed
+connection options, including username/password, and register a single owner:
+
+```csharp
+services.AddSingleton(p => PemTlsOptions.FromConfiguration(
+    p.GetRequiredService<IConfiguration>().GetSection("REDIS:TLS")));
+services.AddSingleton<IConnectionMultiplexer>(p =>
+{
+    var config = p.GetRequiredService<IConfiguration>();
+    var options = ConfigurationOptions.Parse(config["REDIS_HOST"]!);
+    var tls = p.GetRequiredService<PemTlsOptions>();
+    options.Ssl = true;
+    // StackExchange.Redis 2.8.16 uses its net6.0 asset on modern .NET.
+    options.SslClientAuthenticationOptions = host =>
+        tls.CreateClientAuthenticationOptions(options.SslHost ?? host);
+    return ConnectionMultiplexer.Connect(options);
+});
+```
+
+Redis uses its endpoint hostname for TLS validation, or its explicit `SslHost`
+setting. The options provider sends the PEM leaf and intermediate chain; a
+leaf-only `CertificateSelection` callback cannot reliably transmit intermediates.
+This provider replaces Redis TLS settings, while parsed Redis authentication and
+connection settings remain in place. Keep the `PemTlsOptions` owner alive until
+its connections are disposed.
+It retains superseded certificates until disposal to protect simultaneous
+handshakes; retained objects grow only with successful certificate rotations.
+Publish certificate/key pairs atomically, for example with a projected-volume
+symlink switch. A handshake spanning a file replacement can fail closed and be
+retried by the client. Do not add another validation callback that accepts errors.
+
+`CERT_PATH` is a PEM fullchain containing the leaf followed by its issuing
+intermediates. `GetCertificate()` returns the leaf with its key;
+`GetCertificateContext()` returns the full chain for modern TLS APIs. Neither
+changes machine trust. Cassandra 3.23 exposes only the older leaf API, so its
+adapter explicitly registers validated **non-root public intermediates** in
+`StoreName.CertificateAuthority` for `StoreLocation.CurrentUser`. Existing entries
+are preserved and duplicate writes are avoided. Registration failure aborts new
+connections. The workload UID must have a writable, private, ephemeral `HOME`
+(on Linux the store is below `$HOME/.dotnet/corefx/cryptography/x509stores/ca`).
+Use an emptyDir or equivalent per-workload home; no root certificate is added to
+this store and no machine store is modified. Public intermediate entries remain
+until that ephemeral home is discarded; they do not override the explicit root
+bundle used for peer validation.
+
+For a TLS server, use `PemTlsOptions.FromConfiguration(section,
+serverCertificate: true)` to require server-purpose credentials. Obtain
+`GetCertificateContext()` on each new server handshake to pick up leaf/key/chain
+renewals, and use `ValidateClientCertificate` for client authentication against
+the current root bundle, client EKU and validity dates. This callback rejects a
+missing certificate; an application offering optional mTLS must make its own
+explicit decision for clients that present none. It performs no client DNS-name
+check. The library does not configure listeners or alter existing HTTP endpoints.

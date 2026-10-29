@@ -2,7 +2,8 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using Cassandra;
-using Coflnet.Core;
+using Coflnet.Core.Security;
+using System.Net.Security;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -12,6 +13,9 @@ public static class CassandraServiceExtensions
 {
     public static void AddCassandra(this IServiceCollection services)
     {
+        foreach (var sectionName in new[] { "CASSANDRA", "OLD_CASSANDRA" })
+            services.AddKeyedSingleton<PemTlsOptions>(sectionName, (p, _) =>
+                PemTlsOptions.FromConfiguration(p.GetRequiredService<IConfiguration>().GetSection(sectionName).GetSection("TLS")));
         services.AddSingleton(p =>
         {
             return ConstructSessionFromSettingsSection(p, "CASSANDRA");
@@ -42,12 +46,16 @@ public static class CassandraServiceExtensions
         Console.WriteLine("Using replication class " + section["REPLICATION_CLASS"]);
         Console.WriteLine("Using replication factor " + section["REPLICATION_FACTOR"]);
         Console.WriteLine("Using user " + section["USER"]);
-        Console.WriteLine("Using password " + section["PASSWORD"]?.Truncate(2) + "...");
         var certificatePaths = section["X509Certificate_PATHS"];
         Console.WriteLine("Using certificate paths " + certificatePaths);
-        Console.WriteLine("Using certificate password " + section["X509Certificate_PASSWORD"]?.Truncate(2) + "...");
         var validationCertificatePath = section["X509Certificate_VALIDATION_PATH"];
-        if (!string.IsNullOrEmpty(certificatePaths))
+        if (section.GetSection("TLS").Exists())
+        {
+            var pem = p.GetRequiredKeyedService<PemTlsOptions>(sectionName);
+            var sslOptions = pem.CreateCassandraSslOptions(section["TLS:SERVER_NAME"]);
+            builder.WithSSL(sslOptions);
+        }
+        else if (!string.IsNullOrEmpty(certificatePaths))
         {
             var password = section["X509Certificate_PASSWORD"]
                 ?? throw new InvalidOperationException($"{sectionName}:X509Certificate_PASSWORD must be set if {sectionName}:X509Certificate_PATHS is set.");
@@ -60,7 +68,7 @@ public static class CassandraServiceExtensions
                 SslProtocols.Tls12,
                 false,
                 // Custom validator avoids need to trust the CA system-wide.
-                (sender, certificate, chain, errors) => certificate != null && chain != null && (certificateValidator?.Validate(certificate, chain, errors) ?? true)
+                (sender, certificate, chain, errors) => certificate != null && chain != null && (certificateValidator?.Validate(certificate, chain, errors) ?? errors == SslPolicyErrors.None)
             ).SetCertificateCollection(new(certificatePaths.Split(',').Select(p => new X509Certificate2(p, password)).ToArray()));
             builder.WithSSL(sslOptions);
         }
