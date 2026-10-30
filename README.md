@@ -147,6 +147,15 @@ fingerprint. The strict Core callback returns false during TLS and prevents that
 fallback before authentication. Preserve database usernames/passwords and require
 normal hostname validation for every configured host.
 
+Keep a multi-host `Server` list intact. MySqlConnector supplies the **selected
+host for each physical attempt** as the callback sender's
+`SslStream.TargetHostName`; the TLS stack checks that host's SAN. Do not compare
+the certificate with the entire comma-separated list or pin validation to its
+first host. Keep `ValidateServerCertificate` unchanged so hostname errors remain
+fatal. An isolated native test forced an unavailable first host, succeeded on a
+matching second IP, rejected a reachable selected IP missing from the SAN, then
+succeeded again on the matching alternate endpoint with normal client renewal.
+
 The driver's native `SslCert`/`SslKey` loader supplies only the leaf certificate.
 Use `ProvideClientCertificatesCallback` to call `RegisterClientIntermediates()`
 and add `GetCertificate()` to its collection on fresh physical TLS connections.
