@@ -51,6 +51,10 @@ on nuget.org is skipped. `publishPackage.sh` only packs locally into `./out`.
 
 ## PEM mutual TLS
 
+Use application TLS for paths that lack an existing encrypted tunnel or verified
+Cilium encryption. Check the complete route, especially external endpoints;
+reuse the encryption already protecting an internal connection.
+
 `AddCassandra()` accepts `CASSANDRA:TLS:CA_CERT_PATH`, `CASSANDRA:TLS:CERT_PATH`
 and `CASSANDRA:TLS:KEY_PATH` (likewise under `OLD_CASSANDRA`). Set all three to
 mounted PEM files. The CA file may contain overlapping old and new root
@@ -175,6 +179,17 @@ Perform no file reads, chain building or store registration on pooled reuse:
 doing that for every logical open caused sustained CPU throttling in the live
 PlayerName pilot. The certificate provider and strict validation callback reload
 material on physical TLS handshakes; broken replacements fail closed there.
+
+Raw `Database.GetDbConnection().Open[Async]()` calls bypass EF connection-opening
+interceptors. For those callers, prepare the closed connection in a factory before
+giving it to EF, including default/typed-options contexts, replica contexts and
+standalone MySqlConnector callers. EF's public
+`Database.SetDbConnection(connection, contextOwnsConnection: true)` preserves
+context ownership. Keep each caller's connection string and provider/migration
+options; a replica must not silently receive the primary string. Leave this path
+unset when opting out. A native Indexer fixture verified five context construction
+paths, raw synchronous/asynchronous privacy reads and owned disposal against an
+X509-requiring MariaDB, including client-chain renewal and selected-IP rejection.
 
 ### Kafka consumer renewal (0.7.6, opt-in)
 
