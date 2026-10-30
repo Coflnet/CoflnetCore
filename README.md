@@ -191,6 +191,10 @@ unset when opting out. A native Indexer fixture verified five context constructi
 paths, raw synchronous/asynchronous privacy reads and owned disposal against an
 X509-requiring MariaDB, including client-chain renewal and selected-IP rejection.
 
+Readiness checks using `Task.WaitAsync` must also cancel their linked token source
+in `finally`: ending the wait does not cancel the underlying SQL operation. Pass
+that token to SQL calls and retain their context scope until the work exits.
+
 ### Kafka consumer renewal (0.7.6, opt-in)
 
 `KAFKA:TLS:RELOAD_ON_CHANGE=true` opts the single-topic `KafkaConsumer.Consume`
@@ -232,6 +236,12 @@ but unprocessed record; commit failure may still cause replay. Exactly-once
 delivery is not promised. Legacy offset values and Close behavior remain
 unchanged outside opt-in rotation. Independent configuration dictionaries keep
 candidate/preflight settings from mutating the previous generation.
+Confluent.Kafka config constructors wrap the supplied dictionary:
+`new ConsumerConfig(existing)` (likewise Client/Producer/Admin config) is not an
+independent snapshot. Before changing settings retained across TLS generations,
+copy with `existing.ToDictionary(item => item.Key, item => item.Value)`; the
+rotation boundaries above already do this. Fresh, solely owned factory configs
+can be wrapped directly.
 
 Metadata preflight proves transport/metadata access, not consumer-group/read ACLs
 or application delivery. Production enrollment still needs fresh-handle delivery,
