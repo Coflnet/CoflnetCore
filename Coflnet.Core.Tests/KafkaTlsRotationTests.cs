@@ -19,7 +19,7 @@ namespace Coflnet.Core.Tests;
 
 [NonParallelizable]
 [Platform("Linux")]
-public class KafkaTlsRotationTests
+public partial class KafkaTlsRotationTests
 {
     private string directory = null!;
     private X509Certificate2 root = null!;
@@ -708,10 +708,10 @@ public class KafkaTlsRotationTests
         Docker("network", "create", name);
         try
         {
-            Docker("run", "-d", "--pull=never", "--name", name, "--network", name, "--user", "0:0",
+            Docker("run", "-d", "--pull=never", "--memory", "2g", "--cpus", "2", "--name", name, "--network", name, "--user", "0:0",
                 "-p", $"127.0.0.1:{port}:9092", "-v", directory + ":/test:ro", "--entrypoint", "sh",
                 "redpandadata/redpanda@sha256:df0d30a08e464fd4f2dfde9735f9b5e73f7cd1d81de87a86a97df859c01bf091", "-c",
-                "cp /test/broker.yaml /tmp/broker.yaml && exec rpk redpanda start --config /tmp/broker.yaml --check=false --overprovisioned --smp=1 --memory=512M --reserve-memory=0M");
+                "cp /test/broker.yaml /tmp/broker.yaml && exec rpk redpanda start --config /tmp/broker.yaml --check=false --overprovisioned --smp=1 --memory=1G --reserve-memory=0M");
             await WaitForBroker(name);
             TestContext.Progress.WriteLine("Isolated broker startup event received.");
             Docker("exec", name, "rpk", "acl", "user", "create", "synthetic-user", "--password", "synthetic-password",
@@ -779,6 +779,9 @@ public class KafkaTlsRotationTests
             await before.Task.WaitAsync(TimeSpan.FromSeconds(30));
             TestContext.Progress.WriteLine("Initial native consumer delivery verified.");
             var peerConsuming = peer.Consume<string>(topic, Process, stop.Token, group);
+            using var renewing = new KafkaCreator(NullLogger<KafkaCreator>.Instance, nativeConfiguration)
+                .BuildProducer<Null, string>(configure: builder => builder.SetLogHandler((_, _) => { }));
+            var firstHandle = renewing.Name;
             var oldPem = File.ReadAllText(Path.Combine(directory, "client.crt"));
             Publish();
             await Task.WhenAll(log.Activated.Task, peerLog.Activated.Task).WaitAsync(TimeSpan.FromSeconds(70));
@@ -792,7 +795,10 @@ public class KafkaTlsRotationTests
             Assert.That(log.Failed.Task.IsCompleted || peerLog.Failed.Task.IsCompleted, Is.False, "Neither member may timeout/rebuild during renewal.");
             TestContext.Progress.WriteLine("Both public opt-in members renewed without new messages; broker confirms assignments [0,1].");
             Assert.That(File.ReadAllText(Path.Combine(directory, "client.crt")), Is.Not.EqualTo(oldPem));
-            await producer.ProduceAsync(topic, new Message<Null, string> { Value = "\"after\"" }, stop.Token);
+            using (var handoff = new CancellationTokenSource(TimeSpan.FromSeconds(70)))
+                while (renewing.Name == firstHandle) await Task.Delay(100, handoff.Token);
+            await renewing.ProduceAsync(topic, new Message<Null, string> { Value = "\"after\"" }, stop.Token);
+            TestContext.Progress.WriteLine("Renewing producer swapped its native handle and delivered after renewal.");
             await after.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await producer.ProduceAsync(topic, new Message<Null, string> { Value = "\"barrier\"" }, stop.Token);
             await barrier.Task.WaitAsync(TimeSpan.FromSeconds(30));

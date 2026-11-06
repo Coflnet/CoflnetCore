@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Configuration;
@@ -7,12 +8,15 @@ using Newtonsoft.Json;
 namespace Coflnet.Kafka;
 public class KafkaCreator
 {
+    internal static readonly ConcurrentDictionary<string, bool> renewalWarnings = new();
     private readonly ILogger<KafkaCreator> _logger;
     private readonly IConfiguration config;
+    private readonly IConfiguration root;
 
     public KafkaCreator(ILogger<KafkaCreator> logger, IConfiguration config)
     {
         _logger = logger;
+        root = config;
         this.config = config.GetSection("KAFKA");
     }
 
@@ -137,14 +141,50 @@ public class KafkaCreator
         return consumerConfig;
     }
 
+    /// <summary>
+    /// Builds a producer. With <c>KAFKA:TLS:RELOAD_ON_CHANGE=true</c> and SASL_SSL the result follows client
+    /// certificate renewals (see README); <paramref name="configure"/> is then re-applied to every new native producer.
+    /// </summary>
     public IProducer<TKey, TRes> BuildProducer<TKey, TRes>(bool serializeToMsgPack = false, Func<ProducerBuilder<TKey, TRes>, ProducerBuilder<TKey, TRes>> configure = null)
     {
         var producerConfig = GetProducerconfig(config);
+        if (config.GetValue<bool>("TLS:RELOAD_ON_CHANGE"))
+            return BuildRenewingProducer(producerConfig, serializeToMsgPack, configure);
         var builder = new ProducerBuilder<TKey, TRes>(producerConfig);
         if (serializeToMsgPack)
             builder = new ProducerBuilder<TKey, TRes>(producerConfig).SetValueSerializer(SerializerFactory.GetSerializer<TRes>());
         if (configure != null)
             builder = configure.Invoke(builder);
         return builder.Build();
+    }
+
+    private IProducer<TKey, TRes> BuildRenewingProducer<TKey, TRes>(ProducerConfig producerConfig, bool serializeToMsgPack,
+        Func<ProducerBuilder<TKey, TRes>, ProducerBuilder<TKey, TRes>>? configure)
+    {
+        ProducerBuilder<TKey, TRes> Recipe(ProducerConfig settings)
+        {
+            ProducerBuilder<TKey, TRes> builder = new RenewableProducerBuilder<TKey, TRes>(settings);
+            if (serializeToMsgPack)
+                builder = builder.SetValueSerializer(SerializerFactory.GetSerializer<TRes>());
+            return configure == null ? builder : configure.Invoke(builder);
+        }
+        var probe = Recipe(producerConfig);
+        var reason = NonRenewableReason(producerConfig, probe);
+        if (reason == null)
+            return RenewingProducer<TKey, TRes>.Create(root, GetClientConfig(config), producerConfig, settings => Recipe(settings).Build(), _logger);
+        if (renewalWarnings.TryAdd(reason, true))
+            _logger.LogWarning("Kafka producer TLS renewal disabled ({Reason}); this producer keeps its certificate until restart.", reason);
+        return probe.Build();
+    }
+
+    internal static string? NonRenewableReason<TKey, TRes>(ProducerConfig settings, ProducerBuilder<TKey, TRes> builder)
+    {
+        if (settings.SecurityProtocol != SecurityProtocol.SaslSsl) return "not SASL_SSL";
+        if (builder is not RenewableProducerBuilder<TKey, TRes> recipe) return "configure replaced the builder";
+        // Swapping the native handle mid-transaction would break transactional semantics.
+        if (!string.IsNullOrEmpty(recipe.Setting("transactional.id"))) return "transactional.id is set";
+        // Without the background poll thread a retired handle never serves its delivery reports.
+        var backgroundPoll = recipe.Setting("dotnet.producer.enable.background.poll");
+        return string.Equals(backgroundPoll, "false", StringComparison.OrdinalIgnoreCase) ? "manual poll" : null;
     }
 }

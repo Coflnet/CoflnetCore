@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Coflnet.Kafka;
 
-// One watcher per running opt-in consumer. Private PEM snapshots never leave this process.
+// One watcher per running opt-in consumer or producer. Private PEM snapshots never leave this process.
 internal sealed class KafkaTlsRotation : IAsyncDisposable
 {
     private readonly Channel<(long Version, Snapshot? Material)> changes = Channel.CreateBounded<(long, Snapshot?)>(
@@ -79,34 +79,38 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
 
     internal static async Task<KafkaTlsRotation> CreateAsync(IConfiguration configuration, ClientConfig baseline,
         string[] topics, ILogger logger, Func<ClientConfig, Task>? preflight = null, TimeProvider? clock = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null, bool watch = true)
+        Func<TimeSpan, CancellationToken, Task>? delay = null, bool watch = true, bool initialPreflight = true)
     {
-        preflight ??= candidate => Task.Run(() =>
-        {
-            var config = new AdminClientConfig(candidate.ToDictionary(item => item.Key, item => item.Value));
-            using var admin = new AdminClientBuilder(config).SetLogHandler((_, _) => { }).Build();
-            // An all-topics request cannot auto-create a misspelled/deleted topic.
-            var metadata = admin.GetMetadata(TimeSpan.FromSeconds(10));
-            if (topics.Any(topic => !metadata.Topics.Any(t => t.Topic == topic && !t.Error.IsError)))
-                throw new InvalidOperationException("Kafka metadata preflight failed.");
-        });
+        preflight ??= MetadataPreflight(topics);
         var owner = new KafkaTlsRotation(configuration, baseline, logger, preflight, clock ?? TimeProvider.System, delay ?? Task.Delay);
         try
         {
             if (baseline.SecurityProtocol != SecurityProtocol.SaslSsl || string.IsNullOrWhiteSpace(baseline.SaslUsername))
-                throw new InvalidOperationException("Renewable Kafka consumers require an unchanged SASL_SSL identity.");
+                throw new InvalidOperationException("Renewable Kafka clients require an unchanged SASL_SSL identity.");
             if (watch) owner.Watch();
             owner.current = owner.ReadSnapshot(0);
-            await owner.PreflightAsync(owner.current);
-            owner.worker = owner.ObserveAsync();
+            if (initialPreflight) await owner.PreflightAsync(owner.current).ConfigureAwait(false);
+            owner.worker = Task.Run(owner.ObserveAsync); // no captured context: Dispose may block on it
             return owner;
         }
-        catch
+        catch (Exception e)
         {
-            await owner.DisposeAsync();
-            throw new InvalidOperationException("Initial renewable Kafka TLS validation/preflight failed; no consumer was started.");
+            await owner.DisposeAsync().ConfigureAwait(false);
+            // Only the type name: messages of native/TLS failures are not guaranteed to be free of secrets.
+            throw new InvalidOperationException($"Initial renewable Kafka TLS validation/preflight failed ({e.GetType().Name}); no Kafka client was started.");
         }
     }
+
+    // Read-only metadata through a separate AdminClient; an empty topic list only proves transport/authentication.
+    internal static Func<ClientConfig, Task> MetadataPreflight(string[] topics) => candidate => Task.Run(() =>
+    {
+        var config = new AdminClientConfig(candidate.ToDictionary(item => item.Key, item => item.Value));
+        using var admin = new AdminClientBuilder(config).SetLogHandler((_, _) => { }).Build();
+        // An all-topics request cannot auto-create a misspelled/deleted topic.
+        var metadata = admin.GetMetadata(TimeSpan.FromSeconds(10));
+        if (topics.Any(topic => !metadata.Topics.Any(t => t.Topic == topic && !t.Error.IsError)))
+            throw new InvalidOperationException("Kafka metadata preflight failed.");
+    });
 
     internal CancellationToken RotationToken { get { lock (gate) return rotate.Token; } }
 
@@ -124,7 +128,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
             pending = null;
             rotate.Dispose();
             rotate = new();
-            logger.LogError("Renewable Kafka TLS candidate expired while draining; retaining the current consumer. Awaiting a new material generation.");
+            logger.LogError("Renewable Kafka TLS candidate expired while draining; retaining the current client. Awaiting a new material generation.");
             return false;
         }
     }
@@ -140,6 +144,13 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
     internal ConsumerConfig Configure(ConsumerConfig config, Snapshot snapshot)
     {
         var result = new ConsumerConfig(config.ToDictionary(item => item.Key, item => item.Value));
+        snapshot.Apply(result);
+        return result;
+    }
+
+    internal ProducerConfig Configure(ProducerConfig config, Snapshot snapshot)
+    {
+        var result = new ProducerConfig(config.ToDictionary(item => item.Key, item => item.Value));
         snapshot.Apply(result);
         return result;
     }
@@ -169,7 +180,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
     {
         var candidate = new ClientConfig(baseline.ToDictionary(item => item.Key, item => item.Value));
         snapshot.Apply(candidate);
-        await preflight(candidate).WaitAsync(TimeSpan.FromSeconds(60), stopped.Token);
+        await preflight(candidate).WaitAsync(TimeSpan.FromSeconds(60), stopped.Token).ConfigureAwait(false);
     }
 
     internal bool ReportOnce(Snapshot snapshot, string failureType)
@@ -199,7 +210,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
     {
         try
         {
-            await delay(wait, token);
+            await delay(wait, token).ConfigureAwait(false);
             lock (gate)
                 if (!token.IsCancellationRequested && snapshot.Version == version)
                     changes.Writer.TryWrite((snapshot.Version, snapshot));
@@ -211,7 +222,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
     {
         try
         {
-            await foreach (var change in changes.Reader.ReadAllAsync(stopped.Token))
+            await foreach (var change in changes.Reader.ReadAllAsync(stopped.Token).ConfigureAwait(false))
             {
                 Snapshot? snapshot = change.Material;
                 try
@@ -224,7 +235,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
                         if (snapshot.Hash == pending?.Hash) { pending = snapshot; continue; }
                     }
                     if (!IsValid(snapshot)) throw new AuthenticationException("Kafka retry material expired.");
-                    await PreflightAsync(snapshot);
+                    await PreflightAsync(snapshot).ConfigureAwait(false);
                     lock (gate)
                     {
                         if (snapshot.Version != version || !IsValid(snapshot)) continue;
@@ -232,11 +243,13 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
                         rotate.Cancel();
                     }
                 }
-                catch (Exception e) when (!stopped.IsCancellationRequested)
+                catch (Exception e)
                 {
+                    // Disposal may race a rejected read/preflight; that failure is moot and must not fault DisposeAsync.
+                    if (stopped.IsCancellationRequested) break;
                     if (snapshot is not null) Retry(snapshot);
                     if (snapshot is null || ReportOnce(snapshot, e.GetType().Name))
-                        logger.LogError("Renewable Kafka TLS candidate rejected ({FailureType}); retaining the current consumer.", e.GetType().Name);
+                        logger.LogError("Renewable Kafka TLS candidate rejected ({FailureType}); retaining the current client.", e.GetType().Name);
                 }
             }
         }
@@ -276,7 +289,7 @@ internal sealed class KafkaTlsRotation : IAsyncDisposable
     {
         foreach (var watcher in watchers) watcher.Dispose();
         stopped.Cancel();
-        try { await worker; await retryTask; }
+        try { await worker.ConfigureAwait(false); await retryTask.ConfigureAwait(false); }
         catch (OperationCanceledException) { }
         finally
         {

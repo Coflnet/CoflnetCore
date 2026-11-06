@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Confluent.Kafka;
 using Prometheus;
 using Microsoft.Extensions.Configuration;
@@ -9,6 +10,7 @@ namespace Coflnet.Kafka;
 public class KafkaConsumer
 {
     static Counter processFail = Metrics.CreateCounter("consume_process_failed", "How often processing of consumed messages failed");
+    internal static readonly ConcurrentDictionary<string, bool> renewalWarnings = new();
     private readonly ILogger<KafkaConsumer> _logger;
     private readonly IConfiguration config;
 
@@ -166,8 +168,42 @@ public class KafkaConsumer
                                             int maxChunkSize = 500,
                                             IDeserializer<T>? deserializer = default)
     {
+        if (this.config.GetValue<bool>("KAFKA:TLS:RELOAD_ON_CHANGE"))
+        {
+            await ConsumeBatchRenewing(config, topics, action, cancleToken, maxChunkSize, deserializer);
+            return;
+        }
         await ConsumeBatchCore(config, topics, action, cancleToken, maxChunkSize, deserializer);
     }
+
+    // Opt-in renewal for every ConsumeBatch overload: the in-flight batch and its commit finish before the handoff.
+    // Unlike Consume, failures propagate to the caller exactly as on the default path.
+    internal async Task ConsumeBatchRenewing<T>(ConsumerConfig consumerConfig, string[] topics,
+        Func<IEnumerable<T>, Task> action, CancellationToken stoppingToken, int maxChunkSize,
+        IDeserializer<T>? deserializer = default, Func<ClientConfig, Task>? preflight = null,
+        Func<ConsumerConfig, TaskCompletionSource, IConsumer<Ignore, T>>? createConsumer = null)
+    {
+        var baseline = KafkaCreator.GetClientConfig(config);
+        if (!SameConnection(consumerConfig, baseline))
+        {
+            if (renewalWarnings.TryAdd("connection", true))
+                _logger.LogWarning("Kafka batch consumer TLS renewal disabled (ConsumerConfig differs from KAFKA:* connection settings); it keeps its certificate until restart.");
+            await ConsumeBatchCore(consumerConfig, topics, action, stoppingToken, maxChunkSize, deserializer, createConsumer: createConsumer);
+            return;
+        }
+        // Independent copy (Confluent configs wrap the caller's dictionary). Auto-commit would let Close commit
+        // records buffered by a failed handoff that were never processed, so only processed offsets are committed.
+        var renewing = new ConsumerConfig(consumerConfig.ToDictionary(item => item.Key, item => item.Value))
+        {
+            EnableAutoCommit = false,
+            EnableAutoOffsetStore = false
+        };
+        await using var rotation = await KafkaTlsRotation.CreateAsync(config, baseline, topics, _logger, preflight);
+        await ConsumeBatchCore(renewing, topics, action, stoppingToken, maxChunkSize, deserializer, rotation, createConsumer);
+    }
+
+    private static bool SameConnection(ClientConfig candidate, ClientConfig baseline) =>
+        candidate.BootstrapServers == baseline.BootstrapServers && candidate.SecurityProtocol == baseline.SecurityProtocol;
 
     internal async Task ConsumeBatchCore<T>(ConsumerConfig config, string[] topics,
         Func<IEnumerable<T>, Task> action, CancellationToken cancleToken, int maxChunkSize,

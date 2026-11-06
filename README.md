@@ -195,16 +195,17 @@ Readiness checks using `Task.WaitAsync` must also cancel their linked token sour
 in `finally`: ending the wait does not cancel the underlying SQL operation. Pass
 that token to SQL calls and retain their context scope until the work exits.
 
-### Kafka consumer renewal (0.7.6, opt-in)
+### Kafka client certificate renewal (consumers 0.7.6, producers and batch consumers 0.7.7, opt-in)
 
-`KAFKA:TLS:RELOAD_ON_CHANGE=true` opts the single-topic `KafkaConsumer.Consume`
-path into native handle reconstruction. Default behavior and producer APIs stay
-unchanged. Activation is limited to SASL_SSL with the existing SASL username and
-credentials; bare-SSL certificate-principal changes are outside this consumer path.
+`KAFKA:TLS:RELOAD_ON_CHANGE=true` opts `KafkaConsumer.Consume`, every
+`KafkaConsumer.ConsumeBatch` overload and `KafkaCreator.BuildProducer` into native
+handle reconstruction. Without the flag all three behave exactly as before.
+Activation is limited to SASL_SSL with the existing SASL username and
+credentials; bare-SSL certificate-principal changes are not covered.
 Continue using `KAFKA:TLS:CA_LOCATION`, `CERTIFICATE_LOCATION` and
-`KEY_LOCATION`; no global or producer cutover is implied.
+`KEY_LOCATION`.
 
-The consumer watches containing directories, including Kubernetes projected
+Each opt-in client watches containing directories, including Kubernetes projected
 `..data` replacement. On a new generation it validates an immutable CA/fullchain/
 key snapshot and client EKU/lifetime, then preflights read-only topic metadata with
 a separate AdminClient and the existing SASL settings, bounded at 60 seconds.
@@ -220,7 +221,7 @@ already preflighted candidate may remain pending when
 a later generation is rejected; its lifetime is checked again at the drain
 boundary. No file polling or per-record certificate/chain work is performed.
 
-After successful preflight, idle consumption is interrupted; a record returned
+**Consumers.** After successful preflight, idle consumption is interrupted; a record returned
 concurrently with cancellation is still processed. In-flight work/commit finish
 at a safe boundary, then an unsubscribed replacement native consumer is built
 while the old handle is alive. Pre-Close build/auth/expiry/supersession failure
@@ -243,6 +244,41 @@ copy with `existing.ToDictionary(item => item.Key, item => item.Value)`; the
 rotation boundaries above already do this. Fresh, solely owned factory configs
 can be wrapped directly.
 
+`ConsumeBatch` uses the same handoff: the in-flight batch and its commit finish,
+then the handle is rebuilt before the next batch. It fails closed (throws) without
+SASL_SSL, like `Consume`. A caller-supplied `ConsumerConfig` is copied and gets
+auto-commit and auto-offset-store disabled, with explicit next-offset commits after
+each processed batch (the default path keeps its legacy offset value), so a failed
+handoff can never commit buffered, unprocessed records. A `ConsumerConfig` whose
+bootstrap servers or security protocol differ from `KAFKA:*` is consumed on the
+plain path without renewal (one-time warning). Unlike `Consume`, `ConsumeBatch`
+does not rebuild on its own: startup preflight, the 60-second assignment wait or a
+failed post-Close recovery throw to the caller, so callers need a retry loop.
+
+**Producers.** With the flag and SASL_SSL, `BuildProducer` returns a wrapper that
+forwards to the current native producer. Startup does not preflight (like a plain
+producer); each renewal is validated and preflighted (metadata, SASL credentials
+last set via `SetSaslCredentials`), then a new producer is built from the same
+recipe: serializer and the `configure` callback are re-applied (so `configure`
+runs once more at startup and once per renewal and should be side-effect free).
+`SetSaslCredentials`/`AddBrokers` calls are replayed (deduplicated) on the new
+handle before it is published. Calls racing the swap land on exactly one live
+handle. The previous producer waits for its in-flight `Produce`/`ProduceAsync`
+calls (a `ProduceAsync` until its delivery completes), is flushed for up to its
+delivery timeout (`message.timeout.ms`, default 300 s, plus `linger.ms` and 5 s;
+leftovers are logged, then purged by Dispose) and disposed in the background.
+`Flush` also waits, within its timeout (negative = infinite), for that
+retirement. Ordering within a partition is not guaranteed across a swap: the old
+handle may still be lingering or retrying batches while the new one sends. A
+rejected renewal keeps the current producer and retries like a consumer.
+`Handle`/`Name` return the current handle; dependent clients built from an older
+`Handle` are not migrated. `Dispose` stops the watcher and disposes the current
+producer. No rotation (plain producer plus a one-time warning per reason) when
+`configure` returns a different builder than it was given (the only way to make a
+transactional or manually polled producer here), when `transactional.id` is set
+(a swap mid-transaction breaks its semantics), when background polling is off
+(a retired handle could never drain), or without SASL_SSL.
+
 Metadata preflight proves transport/metadata access, not consumer-group/read ACLs
 or application delivery. Production enrollment still needs fresh-handle delivery,
 broker identity, rebalance, malformed renewal and rollback evidence. If no valid
@@ -260,7 +296,8 @@ test starts only a private local Docker network and loopback broker from cached
 `redpandadata/redpanda@sha256:df0d30a08e464fd4f2dfde9735f9b5e73f7cd1d81de87a86a97df859c01bf091`;
 it uses synthetic keys/messages and removes its
 container/network afterward. It proves renewal with two members sharing one
-partition, including a member with no partitions, and delivery after renewal.
+partition, including a member with no partitions, and delivery after renewal,
+plus a `BuildProducer` producer that swaps its native handle and delivers after renewal.
 Injected post-Close recovery is unit-tested; native broker failure injection
 remains unverified. Local fixture success does not attest production broker
 identity, account permissions or ACLs. It does not use any production Kafka endpoint.
