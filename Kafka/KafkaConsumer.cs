@@ -61,8 +61,10 @@ public class KafkaConsumer
     }
 
 
-    private async Task ConsumeRenewing<T>(string topic, Func<T, Task> action, CancellationToken stoppingToken,
-        string groupId, AutoOffsetReset start, IDeserializer<T>? deserializer)
+    internal async Task ConsumeRenewing<T>(string topic, Func<T, Task> action, CancellationToken stoppingToken,
+        string groupId, AutoOffsetReset start, IDeserializer<T>? deserializer, Func<ClientConfig, Task>? preflight = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<ConsumerConfig, TaskCompletionSource, IConsumer<Ignore, T>>? createConsumer = null)
     {
         var common = KafkaCreator.GetClientConfig(config);
         var consumerConfig = new ConsumerConfig(common.ToDictionary(item => item.Key, item => item.Value))
@@ -73,7 +75,8 @@ public class KafkaConsumer
             EnableAutoOffsetStore = false,
             PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky
         };
-        await using var rotation = await KafkaTlsRotation.CreateAsync(config, common, [topic], _logger);
+        await using var rotation = await KafkaTlsRotation.CreateAsync(config, common, [topic], _logger, preflight);
+        var backoff = new RebuildBackoff(delay ?? Task.Delay);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -81,14 +84,34 @@ public class KafkaConsumer
                 await ConsumeBatchCore(consumerConfig, [topic], async batch =>
                 {
                     foreach (var message in batch) await action(message);
-                }, stoppingToken, 1, deserializer, rotation);
-
+                    backoff.Reset();
+                }, stoppingToken, 1, deserializer, rotation, createConsumer);
             }
             catch (Exception e) when (!stoppingToken.IsCancellationRequested)
             {
                 _logger.LogError("Renewable Kafka consumer stopped ({FailureType}); rebuilding the same group.", e.GetType().Name);
                 processFail.Inc();
+                await backoff.WaitAsync(stoppingToken);
             }
+        }
+    }
+
+    // Bounds rebuilds after fast failures (auth, all brokers down, assignment timeout): 2 s doubling to 60 s,
+    // back to 2 s once a record was processed.
+    internal sealed class RebuildBackoff(Func<TimeSpan, CancellationToken, Task> delay)
+    {
+        private static readonly TimeSpan First = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan Max = TimeSpan.FromSeconds(60);
+        private TimeSpan next = First;
+
+        internal void Reset() => next = First;
+
+        internal async Task WaitAsync(CancellationToken stoppingToken)
+        {
+            var wait = next;
+            next = TimeSpan.FromTicks(Math.Min(Max.Ticks, next.Ticks * 2));
+            try { await delay(wait, stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         }
     }
 
@@ -183,27 +206,39 @@ public class KafkaConsumer
         IDeserializer<T>? deserializer = default, Func<ClientConfig, Task>? preflight = null,
         Func<ConsumerConfig, TaskCompletionSource, IConsumer<Ignore, T>>? createConsumer = null)
     {
-        var baseline = KafkaCreator.GetClientConfig(config);
-        if (!SameConnection(consumerConfig, baseline))
+        if (RenewableSettings(config, consumerConfig, _logger) is not { } renewable)
         {
-            if (renewalWarnings.TryAdd("connection", true))
-                _logger.LogWarning("Kafka batch consumer TLS renewal disabled (ConsumerConfig differs from KAFKA:* connection settings); it keeps its certificate until restart.");
             await ConsumeBatchCore(consumerConfig, topics, action, stoppingToken, maxChunkSize, deserializer, createConsumer: createConsumer);
             return;
         }
+        await using var rotation = await KafkaTlsRotation.CreateAsync(config, renewable.Baseline, topics, _logger, preflight);
+        await ConsumeBatchCore(renewable.Settings, topics, action, stoppingToken, maxChunkSize, deserializer, rotation, createConsumer);
+    }
+
+    // null (one-time warning): the ConsumerConfig connects elsewhere than KAFKA:* and is consumed without renewal.
+    internal static (ClientConfig Baseline, ConsumerConfig Settings)? RenewableSettings(IConfiguration configuration,
+        ConsumerConfig consumerConfig, ILogger logger)
+    {
+        var baseline = KafkaCreator.GetClientConfig(configuration);
+        if (!SameConnection(consumerConfig, baseline))
+        {
+            if (renewalWarnings.TryAdd("connection", true))
+                logger.LogWarning("Kafka batch consumer TLS renewal disabled (ConsumerConfig differs from KAFKA:* connection settings); it keeps its certificate until restart.");
+            return null;
+        }
         // Independent copy (Confluent configs wrap the caller's dictionary). Auto-commit would let Close commit
         // records buffered by a failed handoff that were never processed, so only processed offsets are committed.
-        var renewing = new ConsumerConfig(consumerConfig.ToDictionary(item => item.Key, item => item.Value))
+        return (baseline, new ConsumerConfig(consumerConfig.ToDictionary(item => item.Key, item => item.Value))
         {
             EnableAutoCommit = false,
             EnableAutoOffsetStore = false
-        };
-        await using var rotation = await KafkaTlsRotation.CreateAsync(config, baseline, topics, _logger, preflight);
-        await ConsumeBatchCore(renewing, topics, action, stoppingToken, maxChunkSize, deserializer, rotation, createConsumer);
+        });
     }
 
+    // The SASL identity counts too: preflight and renewal use KAFKA:* credentials, never the caller's.
     private static bool SameConnection(ClientConfig candidate, ClientConfig baseline) =>
-        candidate.BootstrapServers == baseline.BootstrapServers && candidate.SecurityProtocol == baseline.SecurityProtocol;
+        candidate.BootstrapServers == baseline.BootstrapServers && candidate.SecurityProtocol == baseline.SecurityProtocol
+        && candidate.SaslUsername == baseline.SaslUsername;
 
     internal async Task ConsumeBatchCore<T>(ConsumerConfig config, string[] topics,
         Func<IEnumerable<T>, Task> action, CancellationToken cancleToken, int maxChunkSize,
@@ -213,99 +248,36 @@ public class KafkaConsumer
         var batch = new Queue<ConsumeResult<Ignore, T>>();
         var conf = new ConsumerConfig(config.ToDictionary(item => item.Key, item => item.Value)) { AutoCommitIntervalMs = 0 };
         await Task.Yield();
-        createConsumer ??= (options, ready) =>
-        {
-            var builder = new ConsumerBuilder<Ignore, T>(options)
-                .SetValueDeserializer(deserializer ?? new JsonDeserializer<T>());
-            if (rotation is not null)
-                builder.SetPartitionsAssignedHandler((_, _) => ready.TrySetResult())
-                    .SetErrorHandler((_, error) =>
-                    {
-                        if (error.IsFatal || error.Code is ErrorCode.Local_Authentication or ErrorCode.SaslAuthenticationFailed
-                            or ErrorCode.GroupAuthorizationFailed or ErrorCode.TopicAuthorizationFailed
-                            or ErrorCode.Local_Transport or ErrorCode.Local_AllBrokersDown or ErrorCode.Local_Ssl)
-                            ready.TrySetException(new KafkaException(new Error(error.Code)));
-                    });
-            return builder.Build();
-        };
+        Func<ConsumerConfig, KafkaConsumerReadiness, IConsumer<Ignore, T>> build = createConsumer is null
+            ? (options, readiness) => BuildConsumer(options, deserializer, rotation is null ? null : readiness)
+            : (options, readiness) => createConsumer(options, readiness.Completion);
+        var renewal = rotation is null ? null : new KafkaConsumerRenewal<Ignore, T>(rotation, conf, topics, build, _logger);
         IConsumer<Ignore, T>? c = null;
-        var interrupted = CancellationTokenSource.CreateLinkedTokenSource(cancleToken,
-            rotation?.RotationToken ?? CancellationToken.None);
+        var interrupted = Interruptible(cancleToken, renewal);
         var currentChunkSize = 1;
         try
         {
-            var initialReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            c = createConsumer(rotation is null ? conf : rotation.Configure(conf), initialReady);
-            c.Subscribe(topics);
-            if (rotation is not null) await AwaitAssignment(c, initialReady, batch, cancleToken);
+            if (renewal is null)
+            {
+                c = build(conf, new KafkaConsumerReadiness());
+                c.Subscribe(topics);
+            }
+            else c = await renewal.StartAsync(batch.Enqueue, cancleToken);
             while (!cancleToken.IsCancellationRequested)
             {
-                if (batch.Count == 0 && rotation?.RotationToken.IsCancellationRequested == true && rotation.ShouldRotate())
+                if (batch.Count == 0 && renewal?.HandoffRequested.IsCancellationRequested == true)
                 {
-                    var candidate = rotation.Candidate!;
-                    var previous = rotation.Current;
-                    IConsumer<Ignore, T>? replacement = null;
-                    var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    try
-                    {
-                        replacement = createConsumer(rotation.Configure(conf, candidate), ready);
-                        if (!rotation.IsPending(candidate) || ready.Task.IsFaulted)
-                            throw new InvalidOperationException("Kafka candidate changed or failed before handoff.");
-                        var old = c;
-                        c = null; // Close is irreversible; failures below rebuild the previous snapshot.
-                        try { old.Close(); } finally { old.Dispose(); }
-                        if (!rotation.IsValid(candidate)) throw new InvalidOperationException("Kafka candidate expired during Close.");
-                        replacement.Subscribe(topics);
-                        await AwaitAssignment(replacement, ready, batch, cancleToken);
-                        if (!rotation.IsValid(candidate)) throw new InvalidOperationException("Kafka candidate expired during assignment.");
-                        rotation.Accept(candidate);
-                        c = replacement;
-                        replacement = null;
-                        _logger.LogInformation("Renewable Kafka consumer handoff completed after assignment.");
-                    }
-                    catch (Exception e) when (!cancleToken.IsCancellationRequested)
-                    {
-                        rotation.Reject(candidate);
-                        rotation.Retry(candidate);
-                        var reportFailure = rotation.ReportOnce(candidate, e.GetType().Name);
-                        if (replacement is not null)
-                        {
-                            var failed = replacement;
-                            replacement = null;
-                            try { failed.Close(); }
-                            catch (KafkaException closeError) { if (reportFailure) _logger.LogWarning("Failed Kafka candidate close reported {ErrorCode}; disposing before recovery.", closeError.Error.Code); }
-                            finally { failed.Dispose(); }
-                        }
-                        if (c is not null)
-                        {
-                            if (reportFailure) _logger.LogError("Renewable Kafka candidate rejected before handoff; current handle retained.");
-                        }
-                        else
-                        {
-                            batch.Clear(); // No auto-store/commit: an unprocessed candidate record is replayed.
-                            if (!rotation.IsValid(previous)) throw new InvalidOperationException("Previous Kafka certificate is no longer valid for recovery.");
-                            var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                            c = createConsumer(rotation.Configure(conf, previous), recovered);
-                            c.Subscribe(topics);
-                            await AwaitAssignment(c, recovered, batch, cancleToken);
-                            if (!rotation.IsValid(previous)) throw new InvalidOperationException("Previous Kafka certificate expired during recovery.");
-                            if (reportFailure) _logger.LogError("Renewable Kafka handoff failed after Close; previous validated generation rebuilt. The original handle was not retained.");
-                        }
-                    }
-                    finally
-                    {
-                        if (replacement is not null)
-                            try { replacement.Close(); } finally { replacement.Dispose(); }
-                    }
+                    var current = c;
+                    c = null; // the renewal owns the handle until it returns the one to continue with
+                    c = await renewal.HandoffAsync(current, batch.Enqueue, cancleToken);
                     interrupted.Dispose();
-                    interrupted = CancellationTokenSource.CreateLinkedTokenSource(cancleToken, rotation.RotationToken);
+                    interrupted = Interruptible(cancleToken, renewal);
                     continue;
                 }
                 if (interrupted.IsCancellationRequested)
                 {
                     interrupted.Dispose();
-                    interrupted = CancellationTokenSource.CreateLinkedTokenSource(cancleToken,
-                        rotation?.RotationToken ?? CancellationToken.None);
+                    interrupted = Interruptible(cancleToken, renewal);
                 }
                 try
                 {
@@ -313,7 +285,7 @@ public class KafkaConsumer
                     {
                         ConsumeResult<Ignore, T> cr;
                         try { cr = c.Consume(interrupted.Token); }
-                        catch (OperationCanceledException) when (rotation is not null && !cancleToken.IsCancellationRequested)
+                        catch (OperationCanceledException) when (renewal is not null && !cancleToken.IsCancellationRequested)
                         { continue; }
                         batch.Enqueue(cr); // A record returned during cancellation must still be processed.
                     }
@@ -327,13 +299,13 @@ public class KafkaConsumer
                     if (!config.EnableAutoCommit ?? true)
                         try
                         {
-                            c.Commit(rotation is null ? batch.Select(b => b.TopicPartitionOffset) :
+                            c.Commit(renewal is null ? batch.Select(b => b.TopicPartitionOffset) :
                                 batch.GroupBy(b => b.TopicPartition).Select(g =>
                                     new TopicPartitionOffset(g.Key, g.Max(b => b.Offset.Value) + 1)));
                         }
                         catch (KafkaException e)
                         {
-                            if (rotation is null) _logger.LogError(e, "Kafka batch commit failed.");
+                            if (renewal is null) _logger.LogError(e, "Kafka batch commit failed.");
                             else _logger.LogError("Renewable Kafka commit failed ({ErrorCode}); unconfirmed offsets may replay.", e.Error.Code);
                         }
                     batch.Clear();
@@ -341,45 +313,30 @@ public class KafkaConsumer
                 }
                 catch (ConsumeException e)
                 {
-                    if (rotation is null) _logger.LogError(e, "Kafka consume failed.");
+                    if (renewal is null) _logger.LogError(e, "Kafka consume failed.");
                     else _logger.LogError("Renewable Kafka consume failed ({ErrorCode}).", e.Error.Code);
                 }
             }
         }
-        catch (OperationCanceledException) when (rotation is null || interrupted.IsCancellationRequested)
-        { if (rotation is null) c?.Close(); }
+        catch (OperationCanceledException) when (renewal is null || interrupted.IsCancellationRequested)
+        { if (renewal is null) c?.Close(); }
         finally
         {
-            try { if (rotation is not null) c?.Close(); }
+            try { if (renewal is not null) c?.Close(); }
             finally { c?.Dispose(); interrupted.Dispose(); }
         }
     }
 
-    private static async Task AwaitAssignment<T>(IConsumer<Ignore, T> consumer, TaskCompletionSource ready,
-        Queue<ConsumeResult<Ignore, T>> batch, CancellationToken stoppingToken)
+    private static CancellationTokenSource Interruptible<TKey, TValue>(CancellationToken stoppingToken,
+        KafkaConsumerRenewal<TKey, TValue>? renewal) =>
+        CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, renewal?.HandoffRequested ?? CancellationToken.None);
+
+    private static IConsumer<Ignore, T> BuildConsumer<T>(ConsumerConfig options, IDeserializer<T>? deserializer,
+        KafkaConsumerReadiness? readiness)
     {
-        using var wake = new CancellationTokenSource();
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        using var interrupted = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, wake.Token, deadline.Token);
-        _ = ready.Task.ContinueWith(_ =>
-        {
-            try { wake.Cancel(); } catch (ObjectDisposedException) { }
-        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        while (!ready.Task.IsCompleted)
-        {
-            try
-            {
-                var record = consumer.Consume(interrupted.Token);
-                if (record is not null) batch.Enqueue(record);
-            }
-            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-            {
-                if (deadline.IsCancellationRequested && !ready.Task.IsCompleted)
-                    throw new TimeoutException("Kafka assignment did not complete within 60 seconds.");
-            }
-        }
-        stoppingToken.ThrowIfCancellationRequested();
-        await ready.Task;
+        var builder = new ConsumerBuilder<Ignore, T>(options).SetValueDeserializer(deserializer ?? new JsonDeserializer<T>());
+        readiness?.Attach(builder);
+        return builder.Build();
     }
 
 }

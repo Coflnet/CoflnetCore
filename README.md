@@ -195,7 +195,7 @@ Readiness checks using `Task.WaitAsync` must also cancel their linked token sour
 in `finally`: ending the wait does not cancel the underlying SQL operation. Pass
 that token to SQL calls and retain their context scope until the work exits.
 
-### Kafka client certificate renewal (consumers 0.7.6, producers and batch consumers 0.7.7, opt-in)
+### Kafka client certificate renewal (consumers 0.7.6, producers and batch consumers 0.7.7, custom consume loops 0.7.8, opt-in)
 
 `KAFKA:TLS:RELOAD_ON_CHANGE=true` opts `KafkaConsumer.Consume`, every
 `KafkaConsumer.ConsumeBatch` overload and `KafkaCreator.BuildProducer` into native
@@ -250,10 +250,38 @@ SASL_SSL, like `Consume`. A caller-supplied `ConsumerConfig` is copied and gets
 auto-commit and auto-offset-store disabled, with explicit next-offset commits after
 each processed batch (the default path keeps its legacy offset value), so a failed
 handoff can never commit buffered, unprocessed records. A `ConsumerConfig` whose
-bootstrap servers or security protocol differ from `KAFKA:*` is consumed on the
-plain path without renewal (one-time warning). Unlike `Consume`, `ConsumeBatch`
+bootstrap servers, security protocol or SASL username (0.7.8) differ from `KAFKA:*`
+is consumed on the plain path without renewal (one-time warning). Unlike `Consume`, `ConsumeBatch`
 does not rebuild on its own: startup preflight, the 60-second assignment wait or a
 failed post-Close recovery throw to the caller, so callers need a retry loop.
+`Consume` rebuilds the same group after such a failure, waiting 2 s doubling to 60 s
+between rebuilds and back to 2 s once a record was processed (0.7.8).
+
+**Custom consume loops (0.7.8).** A loop that builds its own native consumer (own
+handlers, partition-parallel processing, own metrics) uses the same handoff through
+`KafkaConsumerRenewal<TKey, TValue>`; `ConsumeBatch` runs on it internally.
+`CreateAsync(configuration, consumerConfig, topics, build, logger)` returns `null`
+without the flag, or (one-time warning) when the `ConsumerConfig` connects elsewhere
+than `KAFKA:*`; consume on the plain path then. Otherwise it validates and preflights
+like `ConsumeBatch` and throws, starting no client, on failure or without SASL_SSL.
+`build(config, readiness)` must return an unsubscribed consumer built from exactly
+that config, whose partitions-assigned handler calls `readiness.PartitionsAssigned()`
+and whose error handler calls `readiness.ReportError(error)` (`readiness.Attach(builder)`
+wires both when the builder has no own handlers); it runs again for every handoff
+and recovery, so handlers must tolerate a new handle. `StartAsync` subscribes and
+awaits the assignment (60 s). Link `HandoffRequested` (read it again after every
+handoff) into blocking consume calls; once every fetched record is processed and its
+next offset committed (auto-commit and auto-offset-store are disabled), pass the
+handle to `HandoffAsync` and continue with the one it returns: the same handle when
+nothing is due or the candidate failed before Close, otherwise a subscribed and
+assigned replacement or the rebuilt previous generation. Records a returned handle
+fetched while assigning are passed to the `buffered` callback and must be processed
+first. `HandoffAsync` throws, leaving no handle open, when post-Close recovery fails
+or on stop, so the loop needs a retry like `ConsumeBatch` callers; a throwing
+`buffered` callback also closes the handle it was about to return and propagates.
+The renewal is not thread-safe: call `StartAsync`/`HandoffAsync` from the loop only,
+one at a time. Dispose it after the loop to stop its watcher, and do not read
+`HandoffRequested` afterwards (it throws `ObjectDisposedException`).
 
 **Producers.** With the flag and SASL_SSL, `BuildProducer` returns a wrapper that
 forwards to the current native producer. Startup does not preflight (like a plain
