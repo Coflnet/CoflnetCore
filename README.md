@@ -206,7 +206,9 @@ Continue using `KAFKA:TLS:CA_LOCATION`, `CERTIFICATE_LOCATION` and
 `KEY_LOCATION`.
 
 Each opt-in client watches containing directories, including Kubernetes projected
-`..data` replacement. On a new generation it validates an immutable CA/fullchain/
+`..data` replacement. Changes are detected by the file watcher plus a 60 second
+content poll (a safety net for inotify limits); only changed content triggers a
+rotation. On a new generation it validates an immutable CA/fullchain/
 key snapshot and client EKU/lifetime, then preflights read-only topic metadata with
 a separate AdminClient and the existing SASL settings, bounded at 60 seconds.
 Location fields are cleared when PEM strings are installed, so concurrent file
